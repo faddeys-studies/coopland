@@ -23,6 +23,17 @@ class Direction(str, enum.Enum):
     def list_clockwise(cls):
         return [cls.North, cls.East, cls.South, cls.West]
 
+    def opposite(self):
+        if self == self.North:
+            return self.South
+        if self == self.South:
+            return self.North
+        if self == self.East:
+            return self.West
+        if self == self.West:
+            return self.East
+        raise ValueError(self)
+
 
 class Maze:
 
