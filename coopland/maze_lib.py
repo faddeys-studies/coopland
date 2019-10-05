@@ -9,15 +9,15 @@ class Direction(str, enum.Enum):
     East = 'east'
     West = 'west'
 
-    def apply(self, x, y):
+    def apply(self, x, y, d=1):
         if self == self.North:
-            return x, y-1
+            return x, y-d
         if self == self.South:
-            return x, y+1
+            return x, y+d
         if self == self.East:
-            return x+1, y
+            return x+d, y
         if self == self.West:
-            return x-1, y
+            return x-d, y
         raise ValueError(self)
 
     @classmethod

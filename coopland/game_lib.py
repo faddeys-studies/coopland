@@ -36,6 +36,10 @@ class Game:
         self.visibility = [
             [[0, 0, 0, 0] for _ in range(maze.height)] for _ in range(maze.width)
         ]
+        self.corners = [
+            [[[0, 0], [0, 0], [0, 0], [0, 0]] for _ in range(maze.height)]
+            for _ in range(maze.width)
+        ]
         for y in range(maze.height):
             n = 0
             for x in range(1, maze.width + 1):
@@ -58,6 +62,21 @@ class Game:
                         self.visibility[x][y - dy - 1][dir2i[Direction.South]] = dy
                     n = 0
 
+        for d_i, d in enumerate(self.directions):
+            d_left_i = (d_i - 1) % 4
+            d_right_i = (d_i + 1) % 4
+            for x in range(maze.width):
+                for y in range(maze.height):
+                    vis = self.visibility[x][y]
+                    corners = self.corners[x][y]
+                    for dist in range(1, vis[d_i] + 1):
+                        x1, y1 = d.apply(x, y, dist)
+                        vis1 = self.visibility[x1][y1]
+                        if vis1[d_left_i] > 0:
+                            corners[d_i][0] += 1
+                        if vis1[d_right_i] > 0:
+                            corners[d_i][1] += 1
+
     def play(self, max_steps) -> AllAgentReplays:
         replays: AllAgentReplays = [[] for _ in self.initial_agent_positions]
         agent_positions = self.initial_agent_positions[:]
@@ -77,8 +96,11 @@ class Game:
                             visible_other_agents.append((aa, d, dist))
                     visible_exit = self._get_visibility(p, self.exit_position)
                     visibility = self.visibility[p[0]][p[1]]
+                    corners = self.corners[p[0]][p[1]]
                     moves.append(
-                        self.agent_fn(a, visibility, visible_other_agents, visible_exit)
+                        self.agent_fn(
+                            a, visibility, corners, visible_other_agents, visible_exit
+                        )
                     )
             if not any(moves):
                 break

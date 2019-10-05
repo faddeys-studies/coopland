@@ -13,9 +13,10 @@ class RandomMove:
         return f"<{self.direction}>"
 
 
-def agent_fn(agent_id, visibility, visible_other_agents, visible_exit):
+def agent_fn(agent_id, visibility, corners, visible_other_agents, visible_exit):
     del agent_id
     del visibility
+    del corners
     del visible_other_agents
     del visible_exit
     return RandomMove()
