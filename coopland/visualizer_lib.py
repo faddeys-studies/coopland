@@ -6,8 +6,8 @@ from coopland import game_lib
 @dataclasses.dataclass
 class Visualizer:
     cell_size_px: int = 20
-    sec_per_turn: float = 2.0
-    move_animation_sec: float = 0.75
+    sec_per_turn: float = 1.5
+    move_animation_sec: float = 0.5
 
     def run(self, game: game_lib.Game, replay: game_lib.AllAgentReplays):
         tk = tkinter.Tk()
@@ -33,18 +33,38 @@ class Visualizer:
 
         current_t = 0
         n_game_steps = max(map(len, replay))
+        current_replay_loop_token = 0
+        replay_loop_runs = False
 
-        def update_once(delta_t):
-            nonlocal current_t
+        def replay_one_step(delta_t):
+            nonlocal current_t, replay_loop_runs, current_replay_loop_token
             if 0 <= current_t + delta_t <= n_game_steps:
                 self._update_agent_widgets(
                     canvas, replay, agent_widgets, current_t, delta_t
                 )
                 current_t += delta_t
+            elif current_t + delta_t > n_game_steps:
+                replay_loop_runs = False
+                current_replay_loop_token += 1
 
-        tk.bind("<Right>", lambda evt: update_once(+1))
-        tk.bind("<Left>", lambda evt: update_once(-1))
-        # canvas.after(5000, update_loop, 0)
+        def toggle_replay_loop():
+            nonlocal current_replay_loop_token, replay_loop_runs
+            if replay_loop_runs:
+                current_replay_loop_token += 1
+                replay_loop_runs = False
+            else:
+
+                def loop(token):
+                    if token == current_replay_loop_token:
+                        replay_one_step(+1)
+                        canvas.after(int(1000 * self.sec_per_turn), loop, token)
+
+                replay_loop_runs = True
+                loop(current_replay_loop_token)
+
+        tk.bind("<Right>", lambda evt: replay_one_step(+1))
+        tk.bind("<Left>", lambda evt: replay_one_step(-1))
+        tk.bind("<space>", lambda evt: toggle_replay_loop())
 
         tk.mainloop()
 
