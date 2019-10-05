@@ -1,4 +1,5 @@
 import random
+import types
 from typing import List, Tuple, Optional
 from coopland.maze_lib import Direction, Maze
 
@@ -22,8 +23,12 @@ class Game:
         self.agent_fn = agent_fn
 
         all_points = [(x, y) for x in range(maze.width) for y in range(maze.height)]
-        positions = random.sample(all_points, n_agents + 1)
+        rnd = random.Random()
+        if maze.generation_seed is not None:
+            rnd.seed(maze.generation_seed)
+        positions = rnd.sample(all_points, n_agents + 1)
         self.initial_agent_positions = positions[1:]
+        self.n_agents = n_agents
         self.exit_position = positions[0]
 
         self.directions = Direction.list_clockwise()
@@ -106,3 +111,10 @@ class Game:
             if self.visibility[x1][y1][self._dir2i[d]] >= dist:
                 return d, dist
         return None, None
+
+    def get_agent_name(self):
+        if hasattr(self.agent_fn, "name"):
+            return self.agent_fn.name
+        if isinstance(self.agent_fn, types.FunctionType):
+            return f"{self.agent_fn.__module__}.{self.agent_fn.__name__}"
+        return repr(self.agent_fn)

@@ -1,5 +1,6 @@
 import enum
 import random
+import time
 
 
 class Direction(str, enum.Enum):
@@ -40,6 +41,7 @@ class Maze:
     def __init__(self, width, height):
         self.width = width
         self.height = height
+        self.generation_seed = None
         self._vertical_walls = [[True] * (width-1) for _ in range(height)]
         self._horizontal_walls = [[True] * width for _ in range(height-1)]
 
@@ -70,20 +72,26 @@ class Maze:
         return (0 <= x < self.width) and (0 <= y < self.height)
 
 
-def generate_random(width, height, branching):
-    heads = [(random.randrange(width), random.randrange(height))]
+def generate_random(width, height, branching, seed=None):
+    if seed is None:
+        seed = int(time.time_ns())
+    rnd = random.Random()
+    rnd.seed(seed)
+
+    heads = [(rnd.randrange(width), rnd.randrange(height))]
 
     visited = {heads[0]}
     n_not_visited = width * height - 1
 
     maze = Maze(width, height)
+    maze.generation_seed = seed
     directions = [*Direction]
 
     while n_not_visited > 0:
         assert len(heads) > 0
         new_heads = []
         for x, y in heads:
-            random.shuffle(directions)
+            rnd.shuffle(directions)
             for d in directions:
                 x1, y1 = d.apply(x, y)
                 p1 = (x1, y1)
@@ -97,7 +105,7 @@ def generate_random(width, height, branching):
                 n_not_visited -= 1
                 new_heads.append(p1)
 
-                if random.random() > branching:
+                if rnd.random() > branching:
                     break
 
         if not new_heads:
@@ -109,7 +117,7 @@ def generate_random(width, height, branching):
                         candidates.append((x, y))
                         break
             if candidates:
-                new_heads.append(random.choice(candidates))
+                new_heads.append(rnd.choice(candidates))
 
         heads = new_heads
 

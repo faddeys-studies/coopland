@@ -15,10 +15,30 @@ class Visualizer:
         cell_size = self.cell_size_px
         maze = game.maze
 
+        top_info_frame = tkinter.Frame(tk)
+        top_info_frame.pack(side=tkinter.TOP, fill=tkinter.BOTH)
+        info_label = tkinter.Label(
+            top_info_frame,
+            text=f"world={maze.width}x{maze.height} seed={maze.generation_seed}\n"
+            f"agent={game.n_agents} x {game.get_agent_name()}",
+            justify=tkinter.LEFT,
+        )
+        info_label.pack(side=tkinter.LEFT)
+
         canvas = tkinter.Canvas(
-            tk, width=cell_size * maze.width, height=cell_size * maze.height, bg="white"
+            tk,
+            width=cell_size * maze.width,
+            height=cell_size * maze.height,
+            bg="white",
+            bd=1,
+            relief="ridge",
         )
         canvas.pack()
+
+        bottom_status_frame = tkinter.Frame(tk)
+        bottom_status_frame.pack(side=tkinter.BOTTOM, fill=tkinter.BOTH)
+        status_label = tkinter.Label(bottom_status_frame)
+        status_label.pack(side=tkinter.LEFT)
 
         self._draw_maze(canvas, maze, game.exit_position)
 
@@ -43,15 +63,17 @@ class Visualizer:
                     canvas, replay, agent_widgets, current_t, delta_t
                 )
                 current_t += delta_t
-            elif current_t + delta_t > n_game_steps:
+            if current_t + delta_t > n_game_steps:
                 replay_loop_runs = False
                 current_replay_loop_token += 1
+            update_status_label()
 
         def toggle_replay_loop():
             nonlocal current_replay_loop_token, replay_loop_runs
             if replay_loop_runs:
                 current_replay_loop_token += 1
                 replay_loop_runs = False
+                update_status_label()
             else:
 
                 def loop(token):
@@ -62,6 +84,12 @@ class Visualizer:
                 replay_loop_runs = True
                 loop(current_replay_loop_token)
 
+        def update_status_label():
+            status_label.config(
+                text=f"{'>' if replay_loop_runs else '||'} {current_t} / {n_game_steps}"
+            )
+
+        update_status_label()
         tk.bind("<Right>", lambda evt: replay_one_step(+1))
         tk.bind("<Left>", lambda evt: replay_one_step(-1))
         tk.bind("<space>", lambda evt: toggle_replay_loop())

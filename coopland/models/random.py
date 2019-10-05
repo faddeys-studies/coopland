@@ -19,3 +19,6 @@ def agent_fn(agent_id, visibility, visible_other_agents, visible_exit):
     del visible_other_agents
     del visible_exit
     return RandomMove()
+
+
+agent_fn.name = "random"
