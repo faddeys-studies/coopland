@@ -10,10 +10,13 @@ class Visualizer:
     move_animation_sec: float = 0.5
     autoplay: bool = False
     title: str = "coopland"
+    _position = None
 
     def run(self, game: game_lib.Game, replay: game_lib.AllAgentReplays):
         tk = tkinter.Tk()
         tk.title(self.title)
+        if self._position is not None:
+            tk.geometry(f"+{self._position[0]}+{self._position[1]}")
         tk.after(1, lambda: tk.focus_force())
         cell_size = self.cell_size_px
         maze = game.maze
@@ -70,6 +73,7 @@ class Visualizer:
                 replay_loop_runs = False
                 current_replay_loop_token += 1
                 if self.autoplay:
+                    self._position = tk.winfo_x(), tk.winfo_y()
                     tk.after(1000, tk.destroy)
             update_status_label()
 
@@ -84,7 +88,8 @@ class Visualizer:
                 def loop(token):
                     if token == current_replay_loop_token:
                         replay_one_step(+1)
-                        canvas.after(int(1000 * self.sec_per_turn), loop, token)
+                        if replay_loop_runs:
+                            canvas.after(int(1000 * self.sec_per_turn), loop, token)
 
                 replay_loop_runs = True
                 loop(current_replay_loop_token)
