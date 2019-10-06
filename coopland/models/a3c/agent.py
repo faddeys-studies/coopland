@@ -69,12 +69,13 @@ class AgentModel:
 
         actor, actor_state_phs = _build_model_with_states(
             tf.keras.layers.RNN(
-                tf.keras.layers.LSTMCell(30),
-                # [
-                #     tf.keras.layers.LSTMCell(30),
-                #     tf.keras.layers.LSTMCell(30),
-                #     tf.keras.layers.LSTMCell(30),
-                # ],
+                StackedLSTMCells(
+                    [
+                        tf.keras.layers.LSTMCell(30),
+                        tf.keras.layers.LSTMCell(30),
+                        tf.keras.layers.LSTMCell(30),
+                    ]
+                ),
                 return_state=True,
                 return_sequences=True,
                 name=name_prefix + "Actor/RNN",
@@ -86,12 +87,13 @@ class AgentModel:
         )
         critic, critic_state_phs = _build_model_with_states(
             tf.keras.layers.RNN(
-                tf.keras.layers.LSTMCell(30),
-                # [
-                #     tf.keras.layers.LSTMCell(30),
-                #     tf.keras.layers.LSTMCell(30),
-                #     tf.keras.layers.LSTMCell(30),
-                # ],
+                StackedLSTMCells(
+                    [
+                        tf.keras.layers.LSTMCell(30),
+                        tf.keras.layers.LSTMCell(30),
+                        tf.keras.layers.LSTMCell(30),
+                    ]
+                ),
                 return_state=True,
                 return_sequences=True,
                 name=name_prefix + "Critic/RNN",
@@ -214,7 +216,7 @@ def _build_model_with_states(rnn, post_layer, input_tensor):
     )
     input_layer = tf.keras.Input(tensor=input_tensor)
 
-    features, *states = rnn(input_layer, state_keras_inputs)
+    features, *states = rnn(input_layer, initial_state=state_keras_inputs)
     out = post_layer(features)
 
     state_phs_flat = nest.flatten(state_phs)
@@ -225,3 +227,25 @@ def _build_model_with_states(rnn, post_layer, input_tensor):
         inputs=[input_tensor, *state_phs_flat], outputs=[out, *states_flat]
     )
     return model, state_phs_flat
+
+
+class StackedLSTMCells(tf.keras.layers.StackedRNNCells):
+
+    _flatten_state_size = True
+
+    @property
+    def state_size(self):
+        state_size = super(StackedLSTMCells, self).state_size
+        if self._flatten_state_size:
+            state_size = nest.flatten(state_size)
+        return state_size
+
+    def call(self, inputs, states, constants=None, **kwargs):
+        flatten_state_size = self._flatten_state_size
+        self._flatten_state_size = False
+        try:
+            return super(StackedLSTMCells, self).call(
+                inputs, states, constants=None, **kwargs
+            )
+        finally:
+            self._flatten_state_size = flatten_state_size

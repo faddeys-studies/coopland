@@ -14,8 +14,8 @@ from coopland.visualizer_lib import Visualizer
 
 DISCOUNT_RATE = 0.8
 ENTROPY_STRENGTH = 0.1
-SUMMARIES_DIR = ".data/logs/try6"
-N_WORKERS = 1
+SUMMARIES_DIR = ".data/logs/try7"
+N_WORKERS = 2
 
 
 _last_memory_use = 0.0
@@ -85,7 +85,7 @@ class A3CWorker:
             list(zip(critic_gradients, global_instance.critic.trainable_variables))
         )
 
-        self.push_op = tf.group(actor_push_op, critic_push_op)
+        self.push_op = actor_push_op, critic_push_op
 
         _scalar = tf.compat.v1.summary.scalar
         _hist = tf.compat.v1.summary.histogram
@@ -103,7 +103,7 @@ class A3CWorker:
                 _scalar("Train/ActorFullLoss", actor_full_loss),
             ]
         )
-        self.push_op_and_summaries = tf.group(self.push_op, self.summary_op)
+        self.push_op_and_summaries = self.push_op, self.summary_op
 
     def work_on_one_game(self, maze: Maze, game_index, summary_writer):
         game = Game(maze, self.agent_fn, 1)
@@ -133,7 +133,7 @@ class A3CWorker:
             self.advantage_ph: [advantage],
             self.actions_ph: [actions_onehot],
             self.inputs_ph: [input_vectors],
-        })#, options=tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE))
+        })
         memory("train step done")
 
         if summary_writer is not None:
@@ -269,7 +269,7 @@ def main():
             f"worker_{i}",
             worker.work_loop,
             mazes_queue,
-            None,#summary_writer if i == 0 else None,
+            summary_writer if i == 0 else None,
             callback=None,  # add_replay
         )
 
