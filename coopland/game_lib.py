@@ -5,6 +5,12 @@ from coopland.maze_lib import Direction, Maze
 
 
 VisibilityItem = Tuple[int, int, int, int]
+CornersItem = Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int], Tuple[int, int]]
+VisibleAgentItem = Tuple[int, Optional[Direction], Optional[int]]
+VisibleExit = Tuple[Optional[Direction], Optional[int]]
+Observation = Tuple[
+    int, VisibilityItem, CornersItem, List[VisibleAgentItem], VisibleExit
+]
 Position = Tuple[int, int]
 
 

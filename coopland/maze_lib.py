@@ -72,7 +72,7 @@ class Maze:
         return (0 <= x < self.width) and (0 <= y < self.height)
 
 
-def generate_random(width, height, branching, seed=None):
+def generate_random_maze(width, height, branching, seed=None):
     if seed is None:
         seed = int(time.time_ns())
     rnd = random.Random()
