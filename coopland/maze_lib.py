@@ -1,6 +1,7 @@
 import enum
 import random
 import time
+import json
 
 
 class Direction(str, enum.Enum):
@@ -70,6 +71,24 @@ class Maze:
 
     def is_in(self, x, y):
         return (0 <= x < self.width) and (0 <= y < self.height)
+
+    def serialize(self):
+        return json.dumps({
+            "width": self.width,
+            "height": self.height,
+            "generation_seed": self.generation_seed,
+            "vertical_walls": self._vertical_walls,
+            "horizontal_walls": self._horizontal_walls,
+        })
+
+    @classmethod
+    def from_serialized(cls, string) -> "Maze":
+        data = json.loads(string)
+        self = cls(data["width"], data["height"])
+        self.generation_seed = data["generation_seed"]
+        self._vertical_walls = data["vertical_walls"]
+        self._horizontal_walls = data["horizontal_walls"]
+        return self
 
 
 def generate_random_maze(width, height, branching, seed=None):

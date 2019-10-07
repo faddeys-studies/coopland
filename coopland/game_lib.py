@@ -1,5 +1,6 @@
 import random
 import types
+import json
 from typing import List, Tuple, Optional
 from coopland.maze_lib import Direction, Maze
 
@@ -24,18 +25,22 @@ AllAgentReplays = List[Replay]
 
 
 class Game:
-    def __init__(self, maze: Maze, agent_fn, n_agents):
-        self.maze = maze
-        self.agent_fn = agent_fn
 
+    @classmethod
+    def generate_random(cls, maze: Maze, agent_fn, n_agents):
         all_points = [(x, y) for x in range(maze.width) for y in range(maze.height)]
         rnd = random.Random()
         if maze.generation_seed is not None:
             rnd.seed(maze.generation_seed)
         positions = rnd.sample(all_points, n_agents + 1)
-        self.initial_agent_positions = positions[1:]
-        self.n_agents = n_agents
-        self.exit_position = positions[0]
+        return cls(maze, agent_fn, positions[1:], positions[0])
+
+    def __init__(self, maze: Maze, agent_fn, initial_agent_positions, exit_position):
+        self.maze = maze
+        self.agent_fn = agent_fn
+        self.initial_agent_positions = initial_agent_positions
+        self.n_agents = len(initial_agent_positions)
+        self.exit_position = exit_position
 
         self.directions = Direction.list_clockwise()
         self._dir2i = dir2i = {d: i for i, d in enumerate(self.directions)}
@@ -146,3 +151,14 @@ class Game:
         if isinstance(self.agent_fn, types.FunctionType):
             return f"{self.agent_fn.__module__}.{self.agent_fn.__name__}"
         return repr(self.agent_fn)
+
+    def serialize(self):
+        return json.dumps([
+            self.maze.serialize(), self.initial_agent_positions, self.exit_position
+        ])
+
+    @classmethod
+    def from_serialized(cls, string):
+        maze_str, initial_agent_positions, exit_position = json.loads(string)
+        maze = Maze.from_serialized(maze_str)
+        return cls(maze, None, initial_agent_positions, exit_position)

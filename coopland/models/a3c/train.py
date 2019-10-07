@@ -9,13 +9,16 @@ from queue import Queue, Full
 from coopland.models.a3c.agent import AgentModel, AgentInstance
 from coopland.game_lib import Game, Maze, Direction
 from coopland.maze_lib import generate_random_maze
-from coopland.visualizer_lib import Visualizer
+from coopland.visualizer_lib import VisualizerServer
+from coopland import utils
 
 
 DISCOUNT_RATE = 0.8
 ENTROPY_STRENGTH = 0.1
-SUMMARIES_DIR = ".data/logs/try7"
+SUMMARIES_DIR = ".data/logs/try9"
+MODEL_DIR = ".data/models/try9"
 N_WORKERS = 2
+VISUALIZE = True
 
 
 _last_memory_use = 0.0
@@ -23,12 +26,12 @@ _last_memory_use = 0.0
 
 def memory(when):
     global _last_memory_use
-    pid = os.getpid()
-    py = psutil.Process(pid)
-    memory_use = py.memory_info()[0] / 2. ** 20
-    if abs(1000000 * (memory_use - _last_memory_use)) > 1:
-        print(f"memory: {when}: {memory_use:4f} d={memory_use - _last_memory_use:+4f}")
-        _last_memory_use = memory_use
+    # pid = os.getpid()
+    # py = psutil.Process(pid)
+    # memory_use = py.memory_info()[0] / 2.0 ** 20
+    # if abs(1000000 * (memory_use - _last_memory_use)) > 1:
+    #     print(f"memory: {when}: {memory_use:4f} d={memory_use - _last_memory_use:+4f}")
+    #     _last_memory_use = memory_use
 
 
 class A3CWorker:
@@ -106,7 +109,7 @@ class A3CWorker:
         self.push_op_and_summaries = self.push_op, self.summary_op
 
     def work_on_one_game(self, maze: Maze, game_index, summary_writer):
-        game = Game(maze, self.agent_fn, 1)
+        game = Game.generate_random(maze, self.agent_fn, 1)
         memory("before init")
         self.session.run(self.fetch_op)
         memory("fetch op")
@@ -128,12 +131,15 @@ class A3CWorker:
 
         op = self.push_op if summary_writer is None else self.push_op_and_summaries
 
-        results = self.session.run(op, {
-            self.reward_ph: [reward],
-            self.advantage_ph: [advantage],
-            self.actions_ph: [actions_onehot],
-            self.inputs_ph: [input_vectors],
-        })
+        results = self.session.run(
+            op,
+            {
+                self.reward_ph: [reward],
+                self.advantage_ph: [advantage],
+                self.actions_ph: [actions_onehot],
+                self.inputs_ph: [input_vectors],
+            },
+        )
         memory("train step done")
 
         if summary_writer is not None:
@@ -162,18 +168,19 @@ class A3CWorker:
 
 
 def build_immediate_reward(replay, exit_pos):
-    visited_points = {replay[0][1]}
+    visited_points = {replay[0][1]: 1}
     seen_points = get_visible_positions(replay[0][0].observation[1], replay[0][1])
     rewards = []
     for move, _, new_pos in replay:
         r = 0.0
         if new_pos in visited_points:
-            r -= 0.1
+            r -= 0.1 * visited_points[new_pos]
+            visited_points[new_pos] += 1
         else:
-            visited_points.add(new_pos)
+            visited_points[new_pos] = 1
         visible_points = get_visible_positions(move.observation[1], new_pos)
         new_visible = visible_points - seen_points
-        r += 0.1 * len(new_visible)
+        r += 0.2 * len(new_visible)
         seen_points.update(new_visible)
         if new_pos == exit_pos:
             r += 10
@@ -202,8 +209,8 @@ def get_visible_positions(visibility, position):
 _directions = Direction.list_clockwise()
 
 
-def maze_generator_loop(mazes_queue, should_stop):
-    i = 0
+def maze_generator_loop(mazes_queue, should_stop, initial_step):
+    i = initial_step
     while not should_stop():
         maze = generate_random_maze(4, 4, 0.01)
         i += 1
@@ -214,7 +221,8 @@ def maze_generator_loop(mazes_queue, should_stop):
                 pass
             else:
                 break
-    mazes_queue.put((None, None))
+    for _ in range(N_WORKERS):
+        mazes_queue.put((None, None))
 
 
 def main():
@@ -239,14 +247,18 @@ def main():
 
     session.run(global_init_op)
 
+    if os.path.exists(MODEL_DIR):
+        training_step = global_inst.load_variables(session, MODEL_DIR)
+        print("restored model at step", training_step)
+    else:
+        training_step = 0
+        os.makedirs(MODEL_DIR)
+
     summary_writer = tf.compat.v1.summary.FileWriter(SUMMARIES_DIR)
 
     mazes_queue = Queue(maxsize=N_WORKERS * 2)
-    replays_queue = Queue(maxsize=1)
     stop_event = threading.Event()
-    # visualizer = Visualizer(
-    #     cell_size_px=50, sec_per_turn=0.5, move_animation_sec=0.4, autoplay=True
-    # )
+    vis_server = VisualizerServer(9876) if VISUALIZE else None
     all_threads = []
 
     def launch_thread(name, func, *args, **kwargs):
@@ -256,13 +268,16 @@ def main():
         all_threads.append(thread)
         return thread
 
-    launch_thread("mazegen", lambda: maze_generator_loop(mazes_queue, stop_event.isSet))
+    launch_thread(
+        "mazegen",
+        lambda: maze_generator_loop(mazes_queue, stop_event.isSet, training_step),
+    )
 
-    def add_replay(*item):
-        try:
-            replays_queue.put_nowait(item)
-        except Full:
-            pass
+    def worker_callback(game_id, game, replays):
+        nonlocal training_step
+        if vis_server:
+            vis_server.add_replay(game_id, game, replays)
+        training_step = game_id
 
     for i, worker in enumerate(workers):
         launch_thread(
@@ -270,22 +285,24 @@ def main():
             worker.work_loop,
             mazes_queue,
             summary_writer if i == 0 else None,
-            callback=None,  # add_replay
+            callback=worker_callback,
         )
 
     try:
-        # while True:
-        #     game_index, game, replays = replays_queue.get()
-        #     visualizer.title = f"game #{game_index}"
-        #     visualizer.run(game, replays)
         while True:
             # print(f"replays_q={replays_queue.qsize()} "
             #       f"mazes_q={mazes_queue.qsize()} "
             #       f"summary_writer={summary_writer.event_writer._event_queue.qsize()} "
             #       f"n_threads={threading.active_count()}/{len(all_threads)} "
             #       f"")
-            time.sleep(10)
+            time.sleep(600)
+            with utils.interrupt_atomic():
+                print("Saving model at step", training_step)
+                global_inst.save_variables(session, MODEL_DIR, training_step)
     except KeyboardInterrupt:
+        with utils.interrupt_atomic():
+            print("Saving model at step", training_step)
+            global_inst.save_variables(session, MODEL_DIR, training_step)
         print("\nInterrupted, shutting down gracefully")
         stop_event.set()
         for t in all_threads:

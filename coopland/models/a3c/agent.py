@@ -1,6 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import dataclasses
+import os
 from typing import List
 from tensorflow.python.util import nest
 from coopland.maze_lib import Direction
@@ -103,7 +104,12 @@ class AgentModel:
             ),
             input_ph,
         )
-        return AgentInstance(actor, critic, input_ph, actor_state_phs, critic_state_phs)
+        saver = tf.train.Saver(
+            [*actor.trainable_variables, *critic.trainable_variables]
+        )
+        return AgentInstance(
+            actor, critic, input_ph, actor_state_phs, critic_state_phs, saver
+        )
 
     def create_agent_fn(self, agent_instance: "AgentInstance", session):
         actor_states = []
@@ -149,6 +155,7 @@ class AgentInstance:
     input_ph: "tf.Tensor"
     actor_state_phs: "List[tf.Tensor]"
     critic_state_phs: "List[tf.Tensor]"
+    saver: "tf.train.Saver"
     _default_agent_probabilities: "tf.Tensor" = None
     _default_critic_value: "tf.Tensor" = None
 
@@ -189,6 +196,20 @@ class AgentInstance:
 
     def get_variables(self):
         return self.critic.trainable_variables + self.actor.trainable_variables
+
+    def save_variables(self, session, directory, step):
+        checkpoint_path = os.path.join(directory, "model.ckpt")
+        self.saver.save(
+            session, checkpoint_path, global_step=step, write_meta_graph=False
+        )
+        with open(os.path.join(directory, "step.txt"), "w") as f:
+            f.write(str(step))
+
+    def load_variables(self, session, directory):
+        save_path = tf.train.latest_checkpoint(directory)
+        self.saver.restore(session, save_path)
+        with open(os.path.join(directory, "step.txt"), "r") as f:
+            return int(f.read().strip())
 
 
 @dataclasses.dataclass

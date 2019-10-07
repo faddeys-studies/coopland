@@ -2,3 +2,6 @@
 .DS_Store
 .idea
 play.py
+.data
+.ssh
+.aqx.ini
