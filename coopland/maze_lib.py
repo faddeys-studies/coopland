@@ -36,6 +36,9 @@ class Direction(str, enum.Enum):
             return self.East
         raise ValueError(self)
 
+    def __str__(self):
+        return self.value
+
 
 class Maze:
 

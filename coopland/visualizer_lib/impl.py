@@ -45,6 +45,8 @@ class Visualizer:
         bottom_status_frame.pack(side=tkinter.BOTTOM, fill=tkinter.BOTH)
         status_label = tkinter.Label(bottom_status_frame)
         status_label.pack(side=tkinter.LEFT)
+        debug_label = tkinter.Label(bottom_status_frame, justify=tkinter.RIGHT)
+        debug_label.pack(side=tkinter.RIGHT)
 
         self._draw_maze(canvas, maze, game.exit_position)
 
@@ -54,7 +56,10 @@ class Visualizer:
             agent_widgets.append(self._draw_agent(canvas, i, p))
 
         def update_loop(t):
-            self._update_agent_widgets(canvas, replay, agent_widgets, t, +1)
+            moves_with_i = self._update_agent_widgets(
+                canvas, replay, agent_widgets, t, +1
+            )
+            update_debug_label(moves_with_i)
             canvas.after(int(self.sec_per_turn * 1000), update_loop, t + 1)
 
         current_t = 0
@@ -65,9 +70,10 @@ class Visualizer:
         def replay_one_step(delta_t):
             nonlocal current_t, replay_loop_runs, current_replay_loop_token
             if 0 <= current_t + delta_t <= n_game_steps:
-                self._update_agent_widgets(
+                moves_with_i = self._update_agent_widgets(
                     canvas, replay, agent_widgets, current_t, delta_t
                 )
+                update_debug_label(moves_with_i)
                 current_t += delta_t
             if current_t + delta_t > n_game_steps:
                 replay_loop_runs = False
@@ -99,6 +105,17 @@ class Visualizer:
                 text=f"{'>' if replay_loop_runs else '||'} {current_t} / {n_game_steps}"
             )
 
+        def update_debug_label(moves_with_i):
+            texts = [
+                f"{i+1}: {move.debug_text}"
+                for i, move in moves_with_i
+                if getattr(move, "debug_text", None)
+            ]
+            if texts:
+                debug_label.config(text="\n".join(texts))
+            else:
+                debug_label.config(text="")
+
         update_status_label()
         tk.bind("<Right>", lambda evt: replay_one_step(+1))
         tk.bind("<Left>", lambda evt: replay_one_step(-1))
@@ -115,17 +132,20 @@ class Visualizer:
         if not replay:
             return
         cell_size = self.cell_size_px
+        moves_done = []
         for i, (agent_replay, agent_widgets) in enumerate(zip(replay, widgets)):
             try:
                 if dt > 0:
                     move, p1, p2 = agent_replay[t]
                 else:
                     move, p2, p1 = agent_replay[t + dt]
+                moves_done.append((i, move))
             except IndexError:
                 if dt < 0 and t + dt == len(agent_replay):
                     move, p1, p2 = agent_replay[t + dt - 1]
                     agent_widgets = self._draw_agent(canvas, i, p2)
                     widgets[i] = agent_widgets
+                    moves_done.append((i, move))
                 else:
                     for w in agent_widgets:
                         canvas.delete(w)
@@ -136,6 +156,7 @@ class Visualizer:
                     dx = cell_size * (p2[0] - p1[0])
                     dy = cell_size * (p2[1] - p1[1])
                     self._animated_move(canvas, agent_widgets, dx, dy)
+        return moves_done
 
     def _animated_move(self, canvas, widgets, dx, dy):
         anim_timestep_ms = 1000 // 25

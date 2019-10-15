@@ -57,7 +57,12 @@ def _serialize_game_replay(game_id, game, replays):
     game_copy.agent_fn = None
     replays_copy = [
         [
-            (str(move.direction.value), from_pos, to_pos)
+            (
+                str(move.direction.value),
+                getattr(move, "debug_text", None),
+                from_pos,
+                to_pos,
+            )
             for move, from_pos, to_pos in replay
         ]
         for replay in replays
@@ -70,15 +75,19 @@ def _load_game_replay(message):
     game_id, game_str, replays = json.loads(message)
     game = Game.from_serialized(game_str)
     replays = [
-        [(DummyMove(move), from_pos, to_pos) for move, from_pos, to_pos in replay]
+        [
+            (_DeserializedMove(d, dbg_text), from_pos, to_pos)
+            for d, dbg_text, from_pos, to_pos in replay
+        ]
         for replay in replays
     ]
     return game_id, game, cast(AllAgentReplays, replays)
 
 
-class DummyMove:
-    def __init__(self, d):
+class _DeserializedMove:
+    def __init__(self, d, debug_text):
         self.direction = Direction(d)
+        self.debug_text = debug_text
 
 
 def download_replay(address):

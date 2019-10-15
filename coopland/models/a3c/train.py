@@ -4,8 +4,10 @@ import threading
 import time
 import os
 import psutil
+import tqdm
+import multiprocessing
 import gc
-from queue import Queue, Full
+from queue import Queue, Full, Empty
 from coopland.models.a3c.agent import AgentModel, AgentInstance
 from coopland.game_lib import Game, Maze, Direction
 from coopland.maze_lib import generate_random_maze
@@ -13,12 +15,15 @@ from coopland.visualizer_lib import VisualizerServer
 from coopland import utils
 
 
-DISCOUNT_RATE = 0.8
+TOTAL_INTERNAL_THREADS = multiprocessing.cpu_count()
+THREADS_PER_WORKER = 35
+N_WORKERS = TOTAL_INTERNAL_THREADS // THREADS_PER_WORKER
+DISCOUNT_RATE = 1.00
 ENTROPY_STRENGTH = 0.1
-SUMMARIES_DIR = ".data/logs/try9"
-MODEL_DIR = ".data/models/try9"
-N_WORKERS = 2
+SUMMARIES_DIR = ".data/logs/test4"
+MODEL_DIR = ".data/models/test4"
 VISUALIZE = True
+os.environ["OMP_THREAD_LIMIT"] = str(THREADS_PER_WORKER)
 
 
 _last_memory_use = 0.0
@@ -42,12 +47,15 @@ class A3CWorker:
         model: AgentModel,
         global_instance: AgentInstance,
         optimizer: tf.compat.v1.train.Optimizer,
+        greed: bool,
     ):
         self.id = worker_id
         self.model = model
         self.instance = model.build_layers(name=f"Worker{worker_id}")
         self.global_instance = global_instance
-        self.agent_fn = model.create_agent_fn(self.instance, session)
+        self.agent_fn = model.create_agent_fn(
+            self.instance, session, 1.001 if greed else None
+        )
         self.session = session
 
         local_variables = self.instance.get_variables()
@@ -67,8 +75,8 @@ class A3CWorker:
 
         weighted_actions = tf.reduce_sum(self.actions_ph * actor_probs, axis=-1)
         actor_loss_vector = -tf.math.log(weighted_actions + 1e-10) * self.advantage_ph
-        entropy = -tf.reduce_sum(actor_probs * tf.math.log(actor_probs + 1e-10))
         actor_loss = tf.reduce_sum(actor_loss_vector)
+        entropy = -tf.reduce_sum(actor_probs * tf.math.log(actor_probs + 1e-10))
         actor_full_loss = actor_loss - ENTROPY_STRENGTH * entropy
 
         actor_gradients = tf.gradients(
@@ -118,9 +126,8 @@ class A3CWorker:
         memory("game played")
         replay = replays[0]
 
-        reward = discount(
-            build_immediate_reward(replay, game.exit_position), DISCOUNT_RATE
-        )
+        immediate_reward = build_immediate_reward(maze, replay, game.exit_position)
+        reward = discount(immediate_reward, DISCOUNT_RATE)
         critic_values = np.array([move.critic_value for move, _, _ in replay])
         advantage = reward - critic_values
         action_ids = np.array([move.direction_idx for move, _, _ in replay])
@@ -147,6 +154,18 @@ class A3CWorker:
             summary_writer.add_summary(summaries, game_index)
             memory("summary written")
 
+        for (move, _, _), r_i, r_d, v, a in zip(
+            replays[0], immediate_reward, reward, critic_values, advantage
+        ):
+            move.debug_text += (
+                f"{move.direction.upper()[:1]} "
+                f"({move.probabilities[move.direction_idx]:.2f})"
+                f" V={v:.2f}\n"
+                f"Ri={r_i:.2f} "
+                f"Rd={r_d:.2f} "
+                f"A={a:.2f}"
+            )
+
         return game, replays
 
     def work_loop(self, mazes_queue, summary_writer, callback=None):
@@ -167,24 +186,28 @@ class A3CWorker:
             memory("gc")
 
 
-def build_immediate_reward(replay, exit_pos):
+def build_immediate_reward(maze, replay, exit_pos):
     visited_points = {replay[0][1]: 1}
     seen_points = get_visible_positions(replay[0][0].observation[1], replay[0][1])
+    total_points = maze.height * maze.width
     rewards = []
     for move, _, new_pos in replay:
         r = 0.0
         if new_pos in visited_points:
-            r -= 0.1 * visited_points[new_pos]
+            # r -= 0.02 * visited_points[new_pos]
             visited_points[new_pos] += 1
         else:
             visited_points[new_pos] = 1
         visible_points = get_visible_positions(move.observation[1], new_pos)
         new_visible = visible_points - seen_points
-        r += 0.2 * len(new_visible)
+        move.debug_text += f"{new_pos} {visible_points} {move.observation[1]}\n"
+        r += 0.5 * len(new_visible)
         seen_points.update(new_visible)
         if new_pos == exit_pos:
-            r += 10
+            r += 10 * (1 + len(seen_points) / total_points) / 2
         rewards.append(r)
+    if replay[-1][2] != exit_pos:
+        rewards[-1] -= 10
     return rewards
 
 
@@ -221,6 +244,11 @@ def maze_generator_loop(mazes_queue, should_stop, initial_step):
                 pass
             else:
                 break
+    try:
+        while True:
+            mazes_queue.get_nowait()
+    except Empty:
+        pass
     for _ in range(N_WORKERS):
         mazes_queue.put((None, None))
 
@@ -229,15 +257,19 @@ def main():
     tf.compat.v1.reset_default_graph()
     graph = tf.compat.v1.get_default_graph()
     session = tf.compat.v1.Session(
-        config=tf.ConfigProto(inter_op_parallelism_threads=N_WORKERS)
+        config=tf.ConfigProto(
+            inter_op_parallelism_threads=N_WORKERS,
+            intra_op_parallelism_threads=1,
+            allow_soft_placement=True,
+        )
     )
     model = AgentModel()
     global_inst = model.build_layers()
     optimizer = tf.compat.v1.train.RMSPropOptimizer(0.01)
 
     workers = [
-        A3CWorker(i + 1, session, model, global_inst, optimizer)
-        for i in range(N_WORKERS)
+        A3CWorker(i + 1, session, model, global_inst, optimizer, greed=(i == 0))
+        for i in tqdm.tqdm(range(N_WORKERS), desc="Create workers")
     ]
     global_init_op = tf.compat.v1.variables_initializer(
         global_inst.get_variables() + optimizer.variables()

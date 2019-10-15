@@ -44,12 +44,15 @@ class AgentModel:
             {"input_vector": vector, "full_observation": full_observation},
         )
 
-    def decode_nn_output(self, outputs, metadata):
+    def decode_nn_output(self, outputs, metadata, greed_choice_prob=None):
         probs = outputs[0][0, 0]
         value = outputs[1][0, 0]
         input_vector = metadata["input_vector"]
         observation = metadata["full_observation"]
-        direction_i = np.random.choice(range(len(probs)), p=probs)
+        if greed_choice_prob is not None and np.random.random() < greed_choice_prob:
+            direction_i = np.argmax(probs)
+        else:
+            direction_i = np.random.choice(range(len(probs)), p=probs)
         direction = self.i_to_direction[direction_i]
         return Move(
             direction=direction,
@@ -72,9 +75,10 @@ class AgentModel:
             tf.keras.layers.RNN(
                 StackedLSTMCells(
                     [
-                        tf.keras.layers.LSTMCell(30),
-                        tf.keras.layers.LSTMCell(30),
-                        tf.keras.layers.LSTMCell(30),
+                        tf.keras.layers.LSTMCell(100),
+                        tf.keras.layers.LSTMCell(100),
+                        tf.keras.layers.LSTMCell(100),
+                        tf.keras.layers.LSTMCell(100),
                     ]
                 ),
                 return_state=True,
@@ -90,9 +94,10 @@ class AgentModel:
             tf.keras.layers.RNN(
                 StackedLSTMCells(
                     [
-                        tf.keras.layers.LSTMCell(30),
-                        tf.keras.layers.LSTMCell(30),
-                        tf.keras.layers.LSTMCell(30),
+                        tf.keras.layers.LSTMCell(100),
+                        tf.keras.layers.LSTMCell(100),
+                        tf.keras.layers.LSTMCell(100),
+                        tf.keras.layers.LSTMCell(100),
                     ]
                 ),
                 return_state=True,
@@ -111,7 +116,9 @@ class AgentModel:
             actor, critic, input_ph, actor_state_phs, critic_state_phs, saver
         )
 
-    def create_agent_fn(self, agent_instance: "AgentInstance", session):
+    def create_agent_fn(
+        self, agent_instance: "AgentInstance", session, greed_choice_prob=None
+    ):
         actor_states = []
         critic_states = []
 
@@ -122,8 +129,16 @@ class AgentModel:
             feed.update(zip(agent_instance.actor_state_phs, actor_states))
             feed.update(zip(agent_instance.critic_state_phs, critic_states))
 
-            output_data = session.run((actor_probabilities, critic_tensor), feed)
-            move = self.decode_nn_output(output_data, metadata)
+            output_data, (new_actor_states, new_critic_states) = session.run(
+                (
+                    (actor_probabilities_t, critic_t),
+                    (new_actor_states_t, new_critic_states_t),
+                ),
+                feed,
+            )
+            actor_states[:] = new_actor_states
+            critic_states[:] = new_critic_states
+            move = self.decode_nn_output(output_data, metadata, greed_choice_prob)
             return move
 
         def init_before_game():
@@ -134,16 +149,13 @@ class AgentModel:
         agent_fn.name = "RNN"
 
         [
-            actor_logits,
-            actor_probabilities,
-            critic_tensor,
-            new_actor_states,
-            new_critic_states,
+            actor_logits_t,
+            actor_probabilities_t,
+            critic_t,
+            new_actor_states_t,
+            new_critic_states_t,
         ] = agent_instance()
-        del actor_logits
-
-        actor_states[:] = new_actor_states
-        critic_states[:] = new_critic_states
+        del actor_logits_t
 
         return agent_fn
 
@@ -220,6 +232,7 @@ class Move:
     probabilities: np.ndarray
     critic_value: np.ndarray
     observation: Observation
+    debug_text: str = ""
 
     def __repr__(self):
         return f"<{self.direction} V={self.critic_value:3f} A={self.probabilities}>"
