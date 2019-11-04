@@ -172,6 +172,9 @@ class AgentInstance:
     _default_critic_value: "tf.Tensor" = None
 
     def __call__(self, input_tensor=None, actor_states=None, critic_states=None):
+        return self.call(input_tensor, actor_states, critic_states)
+
+    def call(self, input_tensor=None, actor_states=None, critic_states=None):
         if input_tensor is None:
             assert actor_states is None
             assert critic_states is None

@@ -3,57 +3,41 @@ import numpy as np
 import threading
 import time
 import os
-import psutil
 import tqdm
 import multiprocessing
-import gc
+import dataclasses
+import logging
 from queue import Queue, Full, Empty
 from coopland.models.a3c.agent import AgentModel, AgentInstance
-from coopland.game_lib import Game, Maze, Direction
+from coopland.game_lib import Game, Maze
 from coopland.maze_lib import generate_random_maze
 from coopland.visualizer_lib import VisualizerServer
 from coopland import utils
 
 
-DISCOUNT_RATE = 0.9
-ENTROPY_STRENGTH = 0
+@dataclasses.dataclass
+class TrainingContext:
+    # hyper parameters:
+    discount_rate: float
+    entropy_strength: float
+    sync_each_n_games: int
+    learning_rate: float
+    actor_loss_weight: float
+    critic_loss_weight: float
+    reward_function: "(maze, replay, exit_pos) -> [N], where N - number of game steps"
 
-SUMMARIES_DIR = ".data/logs/try8"
-MODEL_DIR = ".data/models/try8"
-VISUALIZE = True
-SYNC_EACH_N_GAMES = 10
-OPTIMIZER_LR = 0.1
-ACTOR_LOSS_W = 1.0
-CRITIC_LOSS_W = 0.1
+    # infrastructure (where to save, visualization, debugging, etc):
+    summaries_dir: str
+    model_dir: str
+    do_visualize: bool
+    per_game_callback: "(...lots of data...) -> None"
 
-REWARD_NEW_EXPLORED = 0.5
-REWARD_WIN = 0.1
-REWARD_LOSE = -0.1
-
-# performance tuning:
-SYSTEM_SUPPORTS_OMP = False
-OMP_THREAD_LIMIT = 35
-MULTITHREADED_TRAINING = True
-
-TOTAL_INTERNAL_THREADS = multiprocessing.cpu_count() if MULTITHREADED_TRAINING else 1
-if SYSTEM_SUPPORTS_OMP:
-    N_WORKERS = max(1, TOTAL_INTERNAL_THREADS // OMP_THREAD_LIMIT)
-    os.environ["OMP_THREAD_LIMIT"] = str(OMP_THREAD_LIMIT)
-else:
-    N_WORKERS = TOTAL_INTERNAL_THREADS
-
-
-_last_memory_use = 0.0
-
-
-def memory(when):
-    global _last_memory_use
-    # pid = os.getpid()
-    # py = psutil.Process(pid)
-    # memory_use = py.memory_info()[0] / 2.0 ** 20
-    # if abs(1000000 * (memory_use - _last_memory_use)) > 1:
-    #     print(f"memory: {when}: {memory_use:4f} d={memory_use - _last_memory_use:+4f}")
-    #     _last_memory_use = memory_use
+    # performance tuning:
+    system_supports_omp: bool
+    omp_thread_limit: int
+    multithreaded_training: bool
+    session_config: tf.ConfigProto
+    n_workers: int = None  # if None, then set automatically
 
 
 class A3CWorker:
@@ -65,8 +49,10 @@ class A3CWorker:
         global_instance: AgentInstance,
         optimizer: tf.compat.v1.train.Optimizer,
         greed: bool,
+        train_context: TrainingContext,
     ):
         self.id = worker_id
+        self.ctx = train_context
         self.model = model
         self.instance = model.build_layers(name=f"Worker{worker_id}")
         self.global_instance = global_instance
@@ -88,27 +74,31 @@ class A3CWorker:
         self.actions_ph = tf.compat.v1.placeholder(tf.float32, [1, None, 4])
         self.reward_ph = tf.compat.v1.placeholder(tf.float32, [1, None])
         self.advantage_ph = tf.compat.v1.placeholder(tf.float32, [1, None])
-        _, actor_probs, critic_value, _, _ = self.instance(self.inputs_ph)
+        _, actor_probs, critic_value, _, _ = self.instance.call(self.inputs_ph)
 
         weighted_actions = tf.reduce_sum(self.actions_ph * actor_probs, axis=-1)
         actor_loss_vector = -tf.math.log(weighted_actions + 1e-10) * self.advantage_ph
         actor_loss = tf.reduce_sum(actor_loss_vector)
         entropy = -tf.reduce_sum(actor_probs * tf.math.log(actor_probs + 1e-10))
-        actor_full_loss = actor_loss - ENTROPY_STRENGTH * entropy
+        actor_full_loss = actor_loss
+        if self.ctx.entropy_strength and self.ctx.entropy_strength > 0.0:
+            actor_full_loss -= self.ctx.entropy_strength * entropy
 
         actor_gradients = tf.gradients(
-            ACTOR_LOSS_W * actor_full_loss, self.instance.actor.trainable_variables
+            self.ctx.actor_loss_weight * actor_full_loss,
+            self.instance.actor.trainable_variables,
         )
-        actor_gradients = [tf.clip_by_value(g, -5, +5) for g in actor_gradients]
+        actor_gradients = [tf.clip_by_norm(g, +5) for g in actor_gradients]
         actor_push_op = optimizer.apply_gradients(
             list(zip(actor_gradients, global_instance.actor.trainable_variables))
         )
 
         critic_loss = tf.reduce_mean(tf.square(self.reward_ph - critic_value))
         critic_gradients = tf.gradients(
-            CRITIC_LOSS_W * critic_loss, self.instance.critic.trainable_variables
+            self.ctx.critic_loss_weight * critic_loss,
+            self.instance.critic.trainable_variables,
         )
-        critic_gradients = [tf.clip_by_value(g, -5, +5) for g in critic_gradients]
+        critic_gradients = [tf.clip_by_norm(g, +5) for g in critic_gradients]
         critic_push_op = optimizer.apply_gradients(
             list(zip(critic_gradients, global_instance.critic.trainable_variables))
         )
@@ -135,21 +125,18 @@ class A3CWorker:
 
     def work_on_one_game(self, maze: Maze, game_index, summary_writer):
         game = Game.generate_random(maze, self.agent_fn, 1)
-        memory("fetch op")
         self.agent_fn.init_before_game()
         replays = game.play(maze.height * maze.width * 3 // 2)
-        memory("game played")
         replay = replays[0]
 
-        immediate_reward = build_immediate_reward(maze, replay, game.exit_position)
-        reward = discount(immediate_reward, DISCOUNT_RATE)
+        immediate_reward = self.ctx.reward_function(maze, replay, game.exit_position)
+        reward = discount(immediate_reward, self.ctx.discount_rate)
         critic_values = np.array([move.critic_value for move, _, _ in replay])
         advantage = reward - critic_values
         action_ids = np.array([move.direction_idx for move, _, _ in replay])
         actions_onehot = np.zeros([len(action_ids), 4])
         actions_onehot[np.arange(len(action_ids)), action_ids] = 1.0
         input_vectors = np.array([move.input_vector for move, _, _ in replay])
-        memory("train inputs calculated")
 
         op = self.push_op if summary_writer is None else self.push_op_and_summaries
 
@@ -162,26 +149,14 @@ class A3CWorker:
                 self.inputs_ph: [input_vectors],
             },
         )
-        memory("train step done")
 
         if summary_writer is not None:
             results, summaries = results
             summary_writer.add_summary(summaries, game_index)
-            memory("summary written")
 
-        for (move, _, _), r_i, r_d, v, a in zip(
-            replays[0], immediate_reward, reward, critic_values, advantage
-        ):
-            for i, d in enumerate(Direction.list_clockwise()):
-                dir_msg = f"{d.upper()[:1]}({move.probabilities[i]:.2f}) "
-                if i == move.direction_idx:
-                    dir_msg = "*" + dir_msg
-                move.debug_text += dir_msg
-            move.debug_text += (
-                f" V={v:.2f}\n"
-                f"Ri={r_i:.2f} "
-                f"Rd={r_d:.2f} "
-                f"A={a:.2f}"
+        if self.ctx.per_game_callback:
+            self.ctx.per_game_callback(
+                replays, immediate_reward, reward, critic_values, advantage
             )
 
         return game, replays
@@ -192,9 +167,9 @@ class A3CWorker:
             game_index, maze = mazes_queue.get()
             if maze is None:
                 break
-            print(f"W={self.id}: running #{game_index}")
+            log.info(f"W={self.id}: running #{game_index}")
 
-            epoch = game_index // SYNC_EACH_N_GAMES
+            epoch = game_index // self.ctx.sync_each_n_games
             if epoch != last_epoch:
                 self.session.run(self.fetch_op)
                 last_epoch = epoch
@@ -202,34 +177,6 @@ class A3CWorker:
             if callback:
                 callback(game_index, game, replays)
             del maze, game, replays
-            memory("game done")
-            gc.collect()
-            memory("gc")
-
-
-def build_immediate_reward(maze, replay, exit_pos):
-    visited_points = {replay[0][1]: 1}
-    seen_points = get_visible_positions(replay[0][0].observation[1], replay[0][1])
-    total_points = maze.height * maze.width
-    rewards = []
-    for move, old_pos, new_pos in replay:
-        r = 0.0
-        if new_pos in visited_points:
-            # r -= 0.02 * visited_points[new_pos]
-            visited_points[new_pos] += 1
-        else:
-            visited_points[new_pos] = 1
-        visible_points = get_visible_positions(move.observation[1], old_pos)
-        new_visible = visible_points - seen_points
-        # move.debug_text += f"{new_pos} {visible_points} {move.observation[1]}\n"
-        r += REWARD_NEW_EXPLORED * len(new_visible)
-        seen_points.update(new_visible)
-        if new_pos == exit_pos:
-            r += REWARD_WIN * (1 + len(seen_points) / total_points) / 2
-        rewards.append(r)
-    if replay[-1][2] != exit_pos:
-        rewards[-1] += REWARD_LOSE
-    return rewards
 
 
 def discount(rewards, gamma):
@@ -242,18 +189,7 @@ def discount(rewards, gamma):
     return discounted_rewards
 
 
-def get_visible_positions(visibility, position):
-    result = {position}
-    for d, v in zip(_directions, visibility):
-        for dist in range(1, v + 1):
-            result.add(d.apply(*position, dist))
-    return result
-
-
-_directions = Direction.list_clockwise()
-
-
-def maze_generator_loop(mazes_queue, should_stop, initial_step):
+def maze_generator_loop(mazes_queue, should_stop, initial_step, n_workers):
     i = initial_step
     while not should_stop():
         maze = generate_random_maze(4, 4, 0.01)
@@ -270,48 +206,63 @@ def maze_generator_loop(mazes_queue, should_stop, initial_step):
             mazes_queue.get_nowait()
     except Empty:
         pass
-    for _ in range(N_WORKERS):
+    for _ in range(n_workers):
         mazes_queue.put((None, None))
 
 
-def main():
+def run_training(train_context: TrainingContext):
+    ctx = train_context
+
+    total_internal_threads = (
+        multiprocessing.cpu_count() if ctx.multithreaded_training else 1
+    )
+    if ctx.system_supports_omp:
+        os.environ["OMP_THREAD_LIMIT"] = str(ctx.omp_thread_limit)
+        n_workers = max(1, total_internal_threads // ctx.omp_thread_limit)
+    else:
+        n_workers = total_internal_threads
+    if ctx.n_workers is None:
+        ctx.n_workers = n_workers
+
     tf.compat.v1.reset_default_graph()
     graph = tf.compat.v1.get_default_graph()
-    session = tf.compat.v1.Session(
-        config=tf.ConfigProto(
-            inter_op_parallelism_threads=N_WORKERS,
-            intra_op_parallelism_threads=1,
-            allow_soft_placement=True,
-        )
-    )
+    session = tf.compat.v1.Session(config=ctx.session_config)
     model = AgentModel()
     global_inst = model.build_layers()
-    optimizer = tf.compat.v1.train.RMSPropOptimizer(OPTIMIZER_LR)
+    optimizer = tf.compat.v1.train.RMSPropOptimizer(ctx.learning_rate)
 
     workers = [
-        A3CWorker(i + 1, session, model, global_inst, optimizer, greed=(i == 0))
-        for i in tqdm.tqdm(range(N_WORKERS), desc="Create workers")
+        A3CWorker(
+            i + 1,
+            session,
+            model,
+            global_inst,
+            optimizer,
+            greed=(i == 0),
+            train_context=ctx,
+        )
+        for i in tqdm.tqdm(range(ctx.n_workers), desc="Create workers")
     ]
     global_init_op = tf.compat.v1.variables_initializer(
         global_inst.get_variables() + optimizer.variables()
     )
     graph.finalize()
-    print("graph finalized")
+    log.info("graph finalized")
 
     session.run(global_init_op)
 
-    if os.path.exists(MODEL_DIR):
-        training_step = global_inst.load_variables(session, MODEL_DIR)
-        print("restored model at step", training_step)
+    if os.path.exists(ctx.model_dir):
+        training_step = global_inst.load_variables(session, ctx.model_dir)
+        log.info("restored model at step %s", training_step)
     else:
         training_step = 0
-        os.makedirs(MODEL_DIR)
+        os.makedirs(ctx.model_dir)
 
-    summary_writer = tf.compat.v1.summary.FileWriter(SUMMARIES_DIR)
+    summary_writer = tf.compat.v1.summary.FileWriter(ctx.summaries_dir)
 
-    mazes_queue = Queue(maxsize=N_WORKERS * 2)
+    mazes_queue = Queue(maxsize=ctx.n_workers * 2)
     stop_event = threading.Event()
-    vis_server = VisualizerServer(9876) if VISUALIZE else None
+    vis_server = VisualizerServer(9876) if ctx.do_visualize else None
     all_threads = []
 
     def launch_thread(name, func, *args, **kwargs):
@@ -323,7 +274,9 @@ def main():
 
     launch_thread(
         "mazegen",
-        lambda: maze_generator_loop(mazes_queue, stop_event.isSet, training_step),
+        lambda: maze_generator_loop(
+            mazes_queue, stop_event.isSet, training_step, ctx.n_workers
+        ),
     )
 
     def worker_callback(game_id, game, replays):
@@ -343,27 +296,21 @@ def main():
 
     try:
         while True:
-            # print(f"replays_q={replays_queue.qsize()} "
-            #       f"mazes_q={mazes_queue.qsize()} "
-            #       f"summary_writer={summary_writer.event_writer._event_queue.qsize()} "
-            #       f"n_threads={threading.active_count()}/{len(all_threads)} "
-            #       f"")
             time.sleep(600)
             with utils.interrupt_atomic():
-                print("Saving model at step", training_step)
-                global_inst.save_variables(session, MODEL_DIR, training_step)
+                log.info("Saving model at step %s", training_step)
+                global_inst.save_variables(session, ctx.model_dir, training_step)
     except KeyboardInterrupt:
         with utils.interrupt_atomic():
-            print("Saving model at step", training_step)
-            global_inst.save_variables(session, MODEL_DIR, training_step)
-        print("\nInterrupted, shutting down gracefully")
+            log.info("Saving model at step %s", training_step)
+            global_inst.save_variables(session, ctx.model_dir, training_step)
+        log.info("\nInterrupted, shutting down gracefully")
         stop_event.set()
         for t in all_threads:
-            print("joining", t.name)
+            log.info("joining %s", t.name)
             t.join()
 
     summary_writer.close()
 
 
-if __name__ == "__main__":
-    main()
+log = logging.getLogger(__name__)

@@ -107,8 +107,9 @@ def download_replay(address):
 
 def main():
     cli = argparse.ArgumentParser()
-    cli.add_argument("server_address")
+    cli.add_argument("server_address", default="localhost:9876", nargs="?")
     server_address = cli.parse_args().server_address
+    print(f"Displaying from {server_address}")
 
     visualizer = Visualizer(
         cell_size_px=100, sec_per_turn=0.5, move_animation_sec=0.4, autoplay=True
