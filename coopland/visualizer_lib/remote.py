@@ -8,7 +8,7 @@ from typing import cast
 from coopland.maze_lib import Direction
 from coopland.game_lib import Game, AllAgentReplays
 from tornado import web, ioloop
-from coopland.visualizer_lib.impl import Visualizer
+from coopland.visualizer_lib.visualizer_impl import Visualizer
 
 
 class VisualizerServer:
@@ -89,10 +89,16 @@ class _DeserializedMove:
         self.direction = Direction(d)
         self.debug_text = debug_text
 
+    def __repr__(self):
+        return f"{self.direction}\n{self.debug_text}"
+
 
 def download_replay(address):
     url = f"http://{address}/get-replay"
-    response = requests.get(url)
+    try:
+        response = requests.get(url)
+    except requests.exceptions.ConnectionError:
+        return None
     if response.status_code == 404:
         return None
     data = response.content.decode("utf-8")
@@ -105,14 +111,19 @@ def main():
     server_address = cli.parse_args().server_address
 
     visualizer = Visualizer(
-        cell_size_px=50, sec_per_turn=0.5, move_animation_sec=0.4, autoplay=True
+        cell_size_px=100, sec_per_turn=0.5, move_animation_sec=0.4, autoplay=True
     )
+    last_game_id = None
     while True:
         item = download_replay(server_address)
         if item is None:
             time.sleep(10)
             continue
         game_id, game, replays = item
+        if last_game_id == game_id:
+            time.sleep(5)
+            continue
+        last_game_id = game_id
         visualizer.title = f"game #{game_id}"
         visualizer.run(game, replays)
 

@@ -1,2 +1,2 @@
-from .impl import Visualizer
+from .visualizer_impl import Visualizer
 from .remote import VisualizerServer, download_replay

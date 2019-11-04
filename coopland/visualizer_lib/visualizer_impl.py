@@ -55,13 +55,6 @@ class Visualizer:
         for i, p in enumerate(game.initial_agent_positions):
             agent_widgets.append(self._draw_agent(canvas, i, p))
 
-        def update_loop(t):
-            moves_with_i = self._update_agent_widgets(
-                canvas, replay, agent_widgets, t, +1
-            )
-            update_debug_label(moves_with_i)
-            canvas.after(int(self.sec_per_turn * 1000), update_loop, t + 1)
-
         current_t = 0
         n_game_steps = max(map(len, replay))
         current_replay_loop_token = 0
@@ -133,7 +126,7 @@ class Visualizer:
             return
         cell_size = self.cell_size_px
         moves_done = []
-        for i, (agent_replay, agent_widgets) in enumerate(zip(replay, widgets)):
+        for i, (agent_replay, agent_widget_set) in enumerate(zip(replay, widgets)):
             try:
                 if dt > 0:
                     move, p1, p2 = agent_replay[t]
@@ -143,19 +136,19 @@ class Visualizer:
             except IndexError:
                 if dt < 0 and t + dt == len(agent_replay):
                     move, p1, p2 = agent_replay[t + dt - 1]
-                    agent_widgets = self._draw_agent(canvas, i, p2)
-                    widgets[i] = agent_widgets
+                    agent_widget_set = self._draw_agent(canvas, i, p2)
+                    widgets[i] = agent_widget_set
                     moves_done.append((i, move))
                 else:
-                    for w in agent_widgets:
+                    for w in agent_widget_set:
                         canvas.delete(w)
                     widgets[i] = ()
             else:
-                assert agent_widgets
+                assert agent_widget_set
                 if p1 != p2:
                     dx = cell_size * (p2[0] - p1[0])
                     dy = cell_size * (p2[1] - p1[1])
-                    self._animated_move(canvas, agent_widgets, dx, dy)
+                    self._animated_move(canvas, agent_widget_set, dx, dy)
         return moves_done
 
     def _animated_move(self, canvas, widgets, dx, dy):
