@@ -4,29 +4,30 @@ from coopland.models.a3c.training import TrainingContext, run_training
 
 
 REWARD_NEW_EXPLORED = 0.5
-REWARD_WIN = 0.1
+REWARD_WIN = 0.2
 REWARD_LOSE = -0.1
+REWARD_STAY = -0.05
 
 
 def main():
     logging.basicConfig(level=logging.INFO)
     ctx = TrainingContext(
-        discount_rate=0.9,
-        entropy_strength=-1,
-        sync_each_n_games=10,
-        learning_rate=0.1,
+        discount_rate=0.5,
+        entropy_strength=0.003,
+        sync_each_n_games=1,
+        learning_rate=0.01,
         actor_loss_weight=1.0,
-        critic_loss_weight=0.1,
+        critic_loss_weight=0.25,
         reward_function=reward_function,
 
-        summaries_dir=".data/logs/try9",
-        model_dir=".data/models/try9",
+        summaries_dir=".data/logs/try14",
+        model_dir=".data/models/try14",
         do_visualize=True,
         per_game_callback=per_game_callback,
 
         system_supports_omp=False,
         omp_thread_limit=35,
-        multithreaded_training=False,
+        multithreaded_training=True,
         session_config=None,
     )
     run_training(ctx)
@@ -39,6 +40,8 @@ def reward_function(maze, replay, exit_pos):
     rewards = []
     for move, old_pos, new_pos in replay:
         r = 0.0
+        if old_pos == new_pos:
+            r += REWARD_STAY
         if new_pos in visited_points:
             # r -= 0.02 * visited_points[new_pos]
             visited_points[new_pos] += 1

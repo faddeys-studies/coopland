@@ -71,13 +71,20 @@ class A3CWorker:
         self.inputs_ph = tf.compat.v1.placeholder(
             tf.float32, [1, None, AgentModel.INPUT_DATA_SIZE]
         )
-        self.actions_ph = tf.compat.v1.placeholder(tf.float32, [1, None, 4])
+        self.actions_ph = tf.compat.v1.placeholder(tf.int32, [1, None])
         self.reward_ph = tf.compat.v1.placeholder(tf.float32, [1, None])
         self.advantage_ph = tf.compat.v1.placeholder(tf.float32, [1, None])
-        _, actor_probs, critic_value, _, _ = self.instance.call(self.inputs_ph)
+        actor_logits, actor_probs, critic_value, _, _ = self.instance.call(
+            self.inputs_ph
+        )
 
-        weighted_actions = tf.reduce_sum(self.actions_ph * actor_probs, axis=-1)
-        actor_loss_vector = -tf.math.log(weighted_actions + 1e-10) * self.advantage_ph
+        responsible_actions = tf.squeeze(
+            tf.batch_gather(actor_probs, tf.expand_dims(self.actions_ph, -1)), -1
+        )
+        actor_loss_vector = (
+            -tf.math.log(responsible_actions + 1e-10) * self.advantage_ph
+        )
+        # tf.losses.softmax_cross_entropy
         actor_loss = tf.reduce_sum(actor_loss_vector)
         entropy = -tf.reduce_sum(actor_probs * tf.math.log(actor_probs + 1e-10))
         actor_full_loss = actor_loss
@@ -93,7 +100,8 @@ class A3CWorker:
             list(zip(actor_gradients, global_instance.actor.trainable_variables))
         )
 
-        critic_loss = tf.reduce_mean(tf.square(self.reward_ph - critic_value))
+        critic_loss_vector = tf.square(self.reward_ph - critic_value)
+        critic_loss = tf.reduce_mean(critic_loss_vector)
         critic_gradients = tf.gradients(
             self.ctx.critic_loss_weight * critic_loss,
             self.instance.critic.trainable_variables,
@@ -105,6 +113,10 @@ class A3CWorker:
 
         self.push_op = actor_push_op, critic_push_op
 
+        [action_logit_gradients] = tf.gradients(
+            self.ctx.actor_loss_weight * actor_full_loss, [actor_logits]
+        )
+
         _scalar = tf.compat.v1.summary.scalar
         _hist = tf.compat.v1.summary.histogram
         self.summary_op = tf.compat.v1.summary.merge(
@@ -112,13 +124,38 @@ class A3CWorker:
                 _scalar("Performance/Reward", tf.reduce_mean(self.reward_ph)),
                 _scalar("Performance/Advantage", tf.reduce_mean(self.advantage_ph)),
                 _scalar("Performance/NSteps", tf.shape(self.actions_ph)[1]),
-                # _hist(
-                #     "Performance/Actions", tf.reduce_mean(self.actions_ph, axis=(0, 1))
-                # ),
                 _scalar("Train/Entropy", entropy),
                 _scalar("Train/ActorLoss", actor_loss),
+                _hist("Train/ActorLoss_hist", actor_loss_vector),
                 _scalar("Train/CriticLoss", critic_loss),
+                _hist("Train/CriticLoss_hist", critic_loss_vector),
                 _scalar("Train/ActorFullLoss", actor_full_loss),
+            ]
+            + [
+                _hist(
+                    f"Performance/Actions/{d}",
+                    tf.cast(tf.equal(self.actions_ph, i), tf.float32),
+                )
+                for d, i in self.model.directions_to_i.items()
+            ]
+            + [
+                _scalar(f"ActorLogits/{d}", tf.reduce_mean(actor_logits[:, :, i]))
+                for d, i in self.model.directions_to_i.items()
+            ]
+            + [
+                _hist(f"ActorLogits/{d}_hist", actor_logits[:, :, i])
+                for d, i in self.model.directions_to_i.items()
+            ]
+            + [
+                _scalar(
+                    f"ActorGradients/{d}",
+                    tf.reduce_mean(action_logit_gradients[:, :, i]),
+                )
+                for d, i in self.model.directions_to_i.items()
+            ]
+            + [
+                _hist(f"ActorGradients/{d}_hist", action_logit_gradients[:, :, i])
+                for d, i in self.model.directions_to_i.items()
             ]
         )
         self.push_op_and_summaries = self.push_op, self.summary_op
@@ -134,8 +171,8 @@ class A3CWorker:
         critic_values = np.array([move.critic_value for move, _, _ in replay])
         advantage = reward - critic_values
         action_ids = np.array([move.direction_idx for move, _, _ in replay])
-        actions_onehot = np.zeros([len(action_ids), 4])
-        actions_onehot[np.arange(len(action_ids)), action_ids] = 1.0
+        # actions_onehot = np.zeros([len(action_ids), 4])
+        # actions_onehot[np.arange(len(action_ids)), action_ids] = 1.0
         input_vectors = np.array([move.input_vector for move, _, _ in replay])
 
         op = self.push_op if summary_writer is None else self.push_op_and_summaries
@@ -145,7 +182,7 @@ class A3CWorker:
             {
                 self.reward_ph: [reward],
                 self.advantage_ph: [advantage],
-                self.actions_ph: [actions_onehot],
+                self.actions_ph: [action_ids],
                 self.inputs_ph: [input_vectors],
             },
         )
