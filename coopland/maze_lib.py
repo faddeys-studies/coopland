@@ -5,20 +5,20 @@ import json
 
 
 class Direction(str, enum.Enum):
-    North = 'north'
-    South = 'south'
-    East = 'east'
-    West = 'west'
+    North = "north"
+    South = "south"
+    East = "east"
+    West = "west"
 
     def apply(self, x, y, d=1):
         if self == self.North:
-            return x, y-d
+            return x, y - d
         if self == self.South:
-            return x, y+d
+            return x, y + d
         if self == self.East:
-            return x+d, y
+            return x + d, y
         if self == self.West:
-            return x-d, y
+            return x - d, y
         raise ValueError(self)
 
     @classmethod
@@ -41,24 +41,23 @@ class Direction(str, enum.Enum):
 
 
 class Maze:
-
     def __init__(self, width, height):
         self.width = width
         self.height = height
         self.generation_seed = None
-        self._vertical_walls = [[True] * (width-1) for _ in range(height)]
-        self._horizontal_walls = [[True] * width for _ in range(height-1)]
+        self._vertical_walls = [[True] * (width - 1) for _ in range(height)]
+        self._horizontal_walls = [[True] * width for _ in range(height - 1)]
 
     def has_path(self, x, y, direction):
         direction = Direction(direction)
         if direction == Direction.East:
-            return x < self.width-1 and not self._vertical_walls[y][x]
+            return x < self.width - 1 and not self._vertical_walls[y][x]
         elif direction == Direction.West:
-            return x > 0 and not self._vertical_walls[y][x-1]
+            return x > 0 and not self._vertical_walls[y][x - 1]
         elif direction == Direction.North:
-            return y > 0 and not self._horizontal_walls[y-1][x]
+            return y > 0 and not self._horizontal_walls[y - 1][x]
         else:
-            return y < self.height-1 and not self._horizontal_walls[y][x]
+            return y < self.height - 1 and not self._horizontal_walls[y][x]
 
     def set_path(self, x, y, direction, has_path):
         direction = Direction(direction)
@@ -66,9 +65,9 @@ class Maze:
         if direction == Direction.East:
             self._vertical_walls[y][x] = has_wall
         elif direction == Direction.West:
-            self._vertical_walls[y][x-1] = has_wall
+            self._vertical_walls[y][x - 1] = has_wall
         elif direction == Direction.North:
-            self._horizontal_walls[y-1][x] = has_wall
+            self._horizontal_walls[y - 1][x] = has_wall
         else:
             self._horizontal_walls[y][x] = has_wall
 
@@ -76,13 +75,15 @@ class Maze:
         return (0 <= x < self.width) and (0 <= y < self.height)
 
     def serialize(self):
-        return json.dumps({
-            "width": self.width,
-            "height": self.height,
-            "generation_seed": self.generation_seed,
-            "vertical_walls": self._vertical_walls,
-            "horizontal_walls": self._horizontal_walls,
-        })
+        return json.dumps(
+            {
+                "width": self.width,
+                "height": self.height,
+                "generation_seed": self.generation_seed,
+                "vertical_walls": self._vertical_walls,
+                "horizontal_walls": self._horizontal_walls,
+            }
+        )
 
     @classmethod
     def from_serialized(cls, string) -> "Maze":
@@ -144,3 +145,45 @@ def generate_random_maze(width, height, branching, seed=None):
         heads = new_heads
 
     return maze
+
+
+def flip_maze(maze) -> Maze:
+    maze_flipped = Maze(maze.width, maze.height)
+    for x in range(maze.width):
+        for y in range(maze.height):
+            if x > 0:
+                maze_flipped.set_path(
+                    maze.width - x - 1,
+                    y,
+                    Direction.East,
+                    maze.has_path(x, y, Direction.West),
+                )
+            if y > 0:
+                maze_flipped.set_path(
+                    maze.width - x - 1,
+                    y,
+                    Direction.North,
+                    maze.has_path(x, y, Direction.North),
+                )
+    return maze_flipped
+
+
+def rotate_maze_clockwise(maze) -> Maze:
+    maze_rotated = Maze(maze.height, maze.width)
+    for x in range(maze.width):
+        for y in range(maze.height):
+            if x > 0:
+                maze_rotated.set_path(
+                    maze.height - y - 1,
+                    x,
+                    Direction.North,
+                    maze.has_path(x, y, Direction.West),
+                )
+            if y > 0:
+                maze_rotated.set_path(
+                    maze.height - y - 1,
+                    x,
+                    Direction.East,
+                    maze.has_path(x, y, Direction.North),
+                )
+    return maze_rotated

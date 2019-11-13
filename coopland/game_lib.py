@@ -7,7 +7,7 @@ from coopland.maze_lib import Direction, Maze
 
 VisibilityItem = Tuple[int, int, int, int]
 CornersItem = Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int], Tuple[int, int]]
-VisibleAgentItem = Tuple[int, Optional[Direction], Optional[int]]
+VisibleAgentItem = Tuple[int, Direction, int]
 VisibleExit = Tuple[Optional[Direction], Optional[int]]
 Observation = Tuple[
     int, VisibilityItem, CornersItem, List[VisibleAgentItem], VisibleExit
@@ -25,7 +25,6 @@ AllAgentReplays = List[Replay]
 
 
 class Game:
-
     @classmethod
     def generate_random(cls, maze: Maze, agent_fn, n_agents):
         all_points = [(x, y) for x in range(maze.width) for y in range(maze.height)]
@@ -110,7 +109,11 @@ class Game:
                     corners = self.corners[p[0]][p[1]]
                     moves.append(
                         self.agent_fn(
-                            a, visibility, corners, visible_other_agents, visible_exit
+                            a,
+                            tuple(visibility),
+                            tuple(corners),
+                            visible_other_agents,
+                            visible_exit,
                         )
                     )
             if not any(moves):
@@ -153,9 +156,9 @@ class Game:
         return repr(self.agent_fn)
 
     def serialize(self):
-        return json.dumps([
-            self.maze.serialize(), self.initial_agent_positions, self.exit_position
-        ])
+        return json.dumps(
+            [self.maze.serialize(), self.initial_agent_positions, self.exit_position]
+        )
 
     @classmethod
     def from_serialized(cls, string):

@@ -9,6 +9,7 @@ import dataclasses
 import logging
 from queue import Queue, Full, Empty
 from coopland.models.a3c.agent import AgentModel, AgentInstance
+from coopland.models.a3c import data_utils
 from coopland.game_lib import Game, Maze
 from coopland.maze_lib import generate_random_maze
 from coopland.visualizer_lib import VisualizerServer
@@ -24,6 +25,7 @@ class TrainingContext:
     learning_rate: float
     actor_loss_weight: float
     critic_loss_weight: float
+    use_data_augmentation: bool
     reward_function: "(maze, replay, exit_pos) -> [N], where N - number of game steps"
 
     # infrastructure (where to save, visualization, debugging, etc):
@@ -68,13 +70,14 @@ class A3CWorker:
             tf.compat.v1.assign(local_var, global_var)
             for local_var, global_var in zip(local_variables, global_variables)
         ]
+        batch_dim = 8 if self.ctx.use_data_augmentation else 1
         self.inputs_ph = tf.compat.v1.placeholder(
-            tf.float32, [1, None, AgentModel.INPUT_DATA_SIZE]
+            tf.float32, [batch_dim, None, AgentModel.INPUT_DATA_SIZE]
         )
-        self.actions_ph = tf.compat.v1.placeholder(tf.int32, [1, None])
-        self.reward_ph = tf.compat.v1.placeholder(tf.float32, [1, None])
-        self.advantage_ph = tf.compat.v1.placeholder(tf.float32, [1, None])
-        actor_logits, actor_probs, critic_value, _, _ = self.instance.call(
+        self.actions_ph = tf.compat.v1.placeholder(tf.int32, [batch_dim, None])
+        self.reward_ph = tf.compat.v1.placeholder(tf.float32, [batch_dim, None])
+        self.advantage_ph = tf.compat.v1.placeholder(tf.float32, [batch_dim, None])
+        actor_logits, actor_probs, critic_value, _, _, _, _ = self.instance.call(
             self.inputs_ph
         )
 
@@ -93,22 +96,22 @@ class A3CWorker:
 
         actor_gradients = tf.gradients(
             self.ctx.actor_loss_weight * actor_full_loss,
-            self.instance.actor.trainable_variables,
+            self.instance.actor_trainable_variables,
         )
         actor_gradients = [tf.clip_by_norm(g, +5) for g in actor_gradients]
         actor_push_op = optimizer.apply_gradients(
-            list(zip(actor_gradients, global_instance.actor.trainable_variables))
+            list(zip(actor_gradients, global_instance.actor_trainable_variables))
         )
 
         critic_loss_vector = tf.square(self.reward_ph - critic_value)
         critic_loss = tf.reduce_mean(critic_loss_vector)
         critic_gradients = tf.gradients(
             self.ctx.critic_loss_weight * critic_loss,
-            self.instance.critic.trainable_variables,
+            self.instance.critic_trainable_variables,
         )
         critic_gradients = [tf.clip_by_norm(g, +5) for g in critic_gradients]
         critic_push_op = optimizer.apply_gradients(
-            list(zip(critic_gradients, global_instance.critic.trainable_variables))
+            list(zip(critic_gradients, global_instance.critic_trainable_variables))
         )
 
         self.push_op = actor_push_op, critic_push_op
@@ -170,20 +173,23 @@ class A3CWorker:
         reward = discount(immediate_reward, self.ctx.discount_rate)
         critic_values = np.array([move.critic_value for move, _, _ in replay])
         advantage = reward - critic_values
-        action_ids = np.array([move.direction_idx for move, _, _ in replay])
-        # actions_onehot = np.zeros([len(action_ids), 4])
-        # actions_onehot[np.arange(len(action_ids)), action_ids] = 1.0
-        input_vectors = np.array([move.input_vector for move, _, _ in replay])
+        if self.ctx.use_data_augmentation:
+            input_vectors, action_ids = data_utils.get_augmented_training_batch(
+                replay, lambda obs: self.model.encode_observation(*obs)[0][0]
+            )
+        else:
+            input_vectors, action_ids = data_utils.get_training_batch(replay)
+        batch_size = input_vectors.shape[0]
 
         op = self.push_op if summary_writer is None else self.push_op_and_summaries
 
         results = self.session.run(
             op,
             {
-                self.reward_ph: [reward],
-                self.advantage_ph: [advantage],
-                self.actions_ph: [action_ids],
-                self.inputs_ph: [input_vectors],
+                self.reward_ph: [reward] * batch_size,
+                self.advantage_ph: [advantage] * batch_size,
+                self.actions_ph: action_ids,
+                self.inputs_ph: input_vectors,
             },
         )
 

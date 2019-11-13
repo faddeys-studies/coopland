@@ -18,6 +18,7 @@ def main():
         learning_rate=0.01,
         actor_loss_weight=1.0,
         critic_loss_weight=0.25,
+        use_data_augmentation=False,
         reward_function=reward_function,
 
         summaries_dir=".data/logs/try14",

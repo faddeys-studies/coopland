@@ -2,7 +2,6 @@ import tensorflow as tf
 import numpy as np
 import dataclasses
 import os
-from typing import List
 from tensorflow.python.util import nest
 from coopland.maze_lib import Direction
 from coopland.game_lib import Observation
@@ -69,52 +68,53 @@ class AgentModel:
         else:
             name_prefix = ""
 
-        input_ph = tf.compat.v1.placeholder(tf.float32, [1, None, self.INPUT_DATA_SIZE])
+        actor_rnn = tf.keras.layers.RNN(
+            StackedLSTMCells(
+                [
+                    tf.keras.layers.LSTMCell(100),
+                    tf.keras.layers.LSTMCell(100),
+                    tf.keras.layers.LSTMCell(100),
+                    tf.keras.layers.LSTMCell(100),
+                ]
+            ),
+            return_state=True,
+            return_sequences=True,
+            name=name_prefix + "Actor/RNN",
+        )
+        actor_head = tf.keras.layers.TimeDistributed(
+            tf.keras.layers.Dense(4), name=name_prefix + "Actor/Head"
+        )
+        critic_rnn = tf.keras.layers.RNN(
+            StackedLSTMCells(
+                [
+                    tf.keras.layers.LSTMCell(100),
+                    tf.keras.layers.LSTMCell(100),
+                    tf.keras.layers.LSTMCell(100),
+                    tf.keras.layers.LSTMCell(100),
+                ]
+            ),
+            return_state=True,
+            return_sequences=True,
+            name=name_prefix + "Critic/RNN",
+        )
+        critic_head = tf.keras.layers.TimeDistributed(
+            tf.keras.layers.Dense(1), name=name_prefix + "Critic/Head"
+        )
 
-        actor, actor_state_phs = _build_model_with_states(
-            tf.keras.layers.RNN(
-                StackedLSTMCells(
-                    [
-                        tf.keras.layers.LSTMCell(100),
-                        tf.keras.layers.LSTMCell(100),
-                        tf.keras.layers.LSTMCell(100),
-                        tf.keras.layers.LSTMCell(100),
-                    ]
-                ),
-                return_state=True,
-                return_sequences=True,
-                name=name_prefix + "Actor/RNN",
-            ),
-            tf.keras.layers.TimeDistributed(
-                tf.keras.layers.Dense(4), name=name_prefix + "Actor/Head"
-            ),
-            input_ph,
-        )
-        critic, critic_state_phs = _build_model_with_states(
-            tf.keras.layers.RNN(
-                StackedLSTMCells(
-                    [
-                        tf.keras.layers.LSTMCell(100),
-                        tf.keras.layers.LSTMCell(100),
-                        tf.keras.layers.LSTMCell(100),
-                        tf.keras.layers.LSTMCell(100),
-                    ]
-                ),
-                return_state=True,
-                return_sequences=True,
-                name=name_prefix + "Critic/RNN",
-            ),
-            tf.keras.layers.TimeDistributed(
-                tf.keras.layers.Dense(1), name=name_prefix + "Critic/Head"
-            ),
-            input_ph,
-        )
+        actor_rnn.build((None, None, self.INPUT_DATA_SIZE))
+        actor_head.build((None, None, actor_rnn.cell.cells[-1].units))
+        critic_rnn.build((None, None, self.INPUT_DATA_SIZE))
+        critic_head.build((None, None, critic_rnn.cell.cells[-1].units))
+
         saver = tf.train.Saver(
-            [*actor.trainable_variables, *critic.trainable_variables]
+            [
+                *actor_rnn.trainable_variables,
+                *critic_rnn.trainable_variables,
+                *actor_head.trainable_variables,
+                *critic_head.trainable_variables,
+            ]
         )
-        return AgentInstance(
-            actor, critic, input_ph, actor_state_phs, critic_state_phs, saver
-        )
+        return AgentInstance(actor_rnn, critic_rnn, actor_head, critic_head, saver)
 
     def create_agent_fn(
         self, agent_instance: "AgentInstance", session, greed_choice_prob=None
@@ -125,9 +125,9 @@ class AgentModel:
         def agent_fn(*observation):
             input_data, metadata = self.encode_observation(*observation)
 
-            feed = {agent_instance.input_ph: [input_data]}
-            feed.update(zip(agent_instance.actor_state_phs, actor_states))
-            feed.update(zip(agent_instance.critic_state_phs, critic_states))
+            feed = {input_ph: [input_data]}
+            feed.update(zip(prev_actor_states_phs, actor_states))
+            feed.update(zip(prev_critic_states_phs, critic_states))
 
             output_data, (new_actor_states, new_critic_states) = session.run(
                 (
@@ -148,13 +148,16 @@ class AgentModel:
         agent_fn.init_before_game = init_before_game
         agent_fn.name = "RNN"
 
+        input_ph = agent_instance.make_input_ph(1)
         [
             actor_logits_t,
             actor_probabilities_t,
             critic_t,
             new_actor_states_t,
             new_critic_states_t,
-        ] = agent_instance()
+            prev_actor_states_phs,
+            prev_critic_states_phs,
+        ] = agent_instance.call(input_ph)
         del actor_logits_t
 
         return agent_fn
@@ -162,55 +165,46 @@ class AgentModel:
 
 @dataclasses.dataclass
 class AgentInstance:
-    actor: "tf.keras.Model"
-    critic: "tf.keras.Model"
-    input_ph: "tf.Tensor"
-    actor_state_phs: "List[tf.Tensor]"
-    critic_state_phs: "List[tf.Tensor]"
+    actor_rnn: "tf.keras.layers.RNN"
+    critic_rnn: "tf.keras.layers.RNN"
+    actor_head: "tf.keras.layers.Layer"
+    critic_head: "tf.keras.layers.Layer"
     saver: "tf.train.Saver"
-    _default_agent_probabilities: "tf.Tensor" = None
-    _default_critic_value: "tf.Tensor" = None
 
-    def __call__(self, input_tensor=None, actor_states=None, critic_states=None):
-        return self.call(input_tensor, actor_states, critic_states)
+    def call(self, input_tensor):
 
-    def call(self, input_tensor=None, actor_states=None, critic_states=None):
-        if input_tensor is None:
-            assert actor_states is None
-            assert critic_states is None
-            actor_logits = self.actor.outputs[0]
-            if self._default_critic_value is None:
-                self._default_critic_value = self.critic.outputs[0][..., 0]
-            critic_value = self._default_critic_value
-            if self._default_agent_probabilities is None:
-                self._default_agent_probabilities = tf.nn.softmax(actor_logits, axis=-1)
-            actor_probabilities = self._default_agent_probabilities
+        actor_logits, actor_after_states, actor_before_states_phs = _call_stateful_rnn(
+            self.actor_rnn, self.actor_head, input_tensor
+        )
+        critic_value, critic_after_states, critic_before_states_phs = _call_stateful_rnn(
+            self.critic_rnn, self.critic_head, input_tensor
+        )
+        critic_value = critic_value[:, :, 0]
+        actor_probabilities = tf.nn.softmax(actor_logits, axis=-1)
 
-            actor_after_states = self.actor.outputs[1:]
-            critic_after_states = self.critic.outputs[1:]
-        else:
-            if actor_states is None:
-                actor_states = self.actor_state_phs
-            if critic_states is None:
-                critic_states = self.critic_state_phs
-            actor_logits, *actor_after_states = self.actor(
-                [input_tensor, *actor_states]
-            )
-            critic_value, *critic_after_states = self.critic(
-                [input_tensor, *critic_states]
-            )
-            critic_value = critic_value[..., 0]
-            actor_probabilities = tf.nn.softmax(actor_logits, axis=-1)
         return (
             actor_logits,
             actor_probabilities,
             critic_value,
             actor_after_states,
             critic_after_states,
+            actor_before_states_phs,
+            critic_before_states_phs,
         )
 
     def get_variables(self):
-        return self.critic.trainable_variables + self.actor.trainable_variables
+        layers = self.actor_rnn, self.actor_head, self.critic_rnn, self.critic_head
+        return [v for layer in layers for v in layer.trainable_variables]
+
+    @property
+    def actor_trainable_variables(self):
+        return self.actor_rnn.trainable_variables + self.actor_head.trainable_variables
+
+    @property
+    def critic_trainable_variables(self):
+        return (
+            self.critic_rnn.trainable_variables + self.critic_head.trainable_variables
+        )
 
     def save_variables(self, session, directory, step):
         checkpoint_path = os.path.join(directory, "model.ckpt")
@@ -225,6 +219,12 @@ class AgentInstance:
         self.saver.restore(session, save_path)
         with open(os.path.join(directory, "step.txt"), "r") as f:
             return int(f.read().strip())
+
+    @staticmethod
+    def make_input_ph(batch_size=1):
+        return tf.compat.v1.placeholder(
+            tf.float32, [batch_size, None, AgentModel.INPUT_DATA_SIZE]
+        )
 
 
 @dataclasses.dataclass
@@ -241,10 +241,15 @@ class Move:
         return f"<{self.direction} V={self.critic_value:3f} A={self.probabilities}>"
 
 
-def _build_model_with_states(rnn, post_layer, input_tensor):
+def _call_stateful_rnn(rnn, post_layer, input_tensor):
+    if input_tensor.get_shape().as_list()[0] is None:
+        batch_size = tf.shape(input_tensor)[0]
+        batch_size_value = None
+    else:
+        batch_size = batch_size_value = input_tensor.get_shape().as_list()[0]
     state_phs = nest.map_structure(
         lambda size: tf.compat.v1.placeholder_with_default(
-            tf.zeros([1, size]), [1, size]
+            tf.zeros([batch_size, size]), [batch_size_value, size]
         ),
         rnn.cell.state_size,
     )
@@ -258,12 +263,8 @@ def _build_model_with_states(rnn, post_layer, input_tensor):
 
     state_phs_flat = nest.flatten(state_phs)
     states_flat = nest.flatten(states)
-    # states_flat = [st[-1] for st in states_flat]
 
-    model = tf.keras.Model(
-        inputs=[input_tensor, *state_phs_flat], outputs=[out, *states_flat]
-    )
-    return model, state_phs_flat
+    return out, states_flat, state_phs_flat
 
 
 class StackedLSTMCells(tf.keras.layers.StackedRNNCells):
