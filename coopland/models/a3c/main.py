@@ -3,31 +3,34 @@ from coopland.game_lib import Direction
 from coopland.models.a3c.training import TrainingContext, run_training
 
 
-REWARD_NEW_EXPLORED = 0.5
-REWARD_WIN = 0.2
-REWARD_LOSE = -0.1
-REWARD_STAY = -0.05
+REWARD_NEW_EXPLORED = 0
+REWARD_WIN = 1.0
+REWARD_LOSE = -0.2
+REWARD_STAY = 0
+REWARD_REPEATED_VISIT = -0.1
+REPEATED_VISIT_MIN = 2
 
 
 def main():
     logging.basicConfig(level=logging.INFO)
     ctx = TrainingContext(
-        discount_rate=0.5,
-        entropy_strength=0.003,
+        discount_rate=0.9,
+        entropy_strength=0.0003,
         sync_each_n_games=1,
-        learning_rate=0.01,
+        learning_rate=0.001,
         actor_loss_weight=1.0,
         critic_loss_weight=0.25,
         use_data_augmentation=False,
         reward_function=reward_function,
+        regularization_strength=-1,
 
-        summaries_dir=".data/logs/try14",
-        model_dir=".data/models/try14",
+        summaries_dir=".data/logs/try31",
+        model_dir=".data/models/try31",
         do_visualize=True,
         per_game_callback=per_game_callback,
 
-        system_supports_omp=False,
-        omp_thread_limit=35,
+        system_supports_omp=True,
+        omp_thread_limit=8,
         multithreaded_training=True,
         session_config=None,
     )
@@ -48,12 +51,14 @@ def reward_function(maze, replay, exit_pos):
             visited_points[new_pos] += 1
         else:
             visited_points[new_pos] = 1
+        if visited_points[new_pos] > REPEATED_VISIT_MIN:
+            r += (visited_points[new_pos] - REPEATED_VISIT_MIN) * REWARD_REPEATED_VISIT
         visible_points = get_visible_positions(move.observation[1], old_pos)
         new_visible = visible_points - seen_points
         r += REWARD_NEW_EXPLORED * len(new_visible)
         seen_points.update(new_visible)
         if new_pos == exit_pos:
-            r += REWARD_WIN * (1 + len(seen_points) / total_points) / 2
+            r += REWARD_WIN
         rewards.append(r)
     if replay[-1][2] != exit_pos:
         rewards[-1] += REWARD_LOSE

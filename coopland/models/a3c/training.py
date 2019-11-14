@@ -27,6 +27,7 @@ class TrainingContext:
     critic_loss_weight: float
     use_data_augmentation: bool
     reward_function: "(maze, replay, exit_pos) -> [N], where N - number of game steps"
+    regularization_strength: float
 
     # infrastructure (where to save, visualization, debugging, etc):
     summaries_dir: str
@@ -81,18 +82,32 @@ class A3CWorker:
             self.inputs_ph
         )
 
-        responsible_actions = tf.squeeze(
-            tf.batch_gather(actor_probs, tf.expand_dims(self.actions_ph, -1)), -1
-        )
-        actor_loss_vector = (
-            -tf.math.log(responsible_actions + 1e-10) * self.advantage_ph
-        )
+        # responsible_actions = tf.squeeze(
+        #     tf.batch_gather(actor_probs, tf.expand_dims(self.actions_ph, -1)), -1
+        # )
+        # actor_loss_vector = (
+        #     -tf.math.log(responsible_actions + 1e-10) * self.advantage_ph
+        # )
         # tf.losses.softmax_cross_entropy
+        actor_loss_vector = (
+            tf.nn.sparse_softmax_cross_entropy_with_logits(
+                labels=self.actions_ph, logits=actor_logits
+            )
+            * self.advantage_ph
+        )
         actor_loss = tf.reduce_sum(actor_loss_vector)
         entropy = -tf.reduce_sum(actor_probs * tf.math.log(actor_probs + 1e-10))
         actor_full_loss = actor_loss
         if self.ctx.entropy_strength and self.ctx.entropy_strength > 0.0:
             actor_full_loss -= self.ctx.entropy_strength * entropy
+        if self.ctx.regularization_strength and self.ctx.regularization_strength > 0.0:
+            reg_loss = tf.add_n(
+                [
+                    tf.reduce_sum(tf.square(v))
+                    for v in self.instance.actor_trainable_variables
+                ]
+            )
+            actor_full_loss += self.ctx.regularization_strength * reg_loss
 
         actor_gradients = tf.gradients(
             self.ctx.actor_loss_weight * actor_full_loss,
@@ -105,8 +120,17 @@ class A3CWorker:
 
         critic_loss_vector = tf.square(self.reward_ph - critic_value)
         critic_loss = tf.reduce_mean(critic_loss_vector)
+        critic_reg_loss = 0.0
+        if self.ctx.regularization_strength and self.ctx.regularization_strength > 0.0:
+            reg_loss = tf.add_n(
+                [
+                    tf.reduce_sum(tf.square(v))
+                    for v in self.instance.critic_trainable_variables
+                ]
+            )
+            critic_reg_loss += self.ctx.regularization_strength * reg_loss
         critic_gradients = tf.gradients(
-            self.ctx.critic_loss_weight * critic_loss,
+            self.ctx.critic_loss_weight * critic_loss + critic_reg_loss,
             self.instance.critic_trainable_variables,
         )
         critic_gradients = [tf.clip_by_norm(g, +5) for g in critic_gradients]
@@ -133,32 +157,32 @@ class A3CWorker:
                 _scalar("Train/CriticLoss", critic_loss),
                 _hist("Train/CriticLoss_hist", critic_loss_vector),
                 _scalar("Train/ActorFullLoss", actor_full_loss),
-            ]
-            + [
-                _hist(
-                    f"Performance/Actions/{d}",
-                    tf.cast(tf.equal(self.actions_ph, i), tf.float32),
-                )
-                for d, i in self.model.directions_to_i.items()
-            ]
-            + [
-                _scalar(f"ActorLogits/{d}", tf.reduce_mean(actor_logits[:, :, i]))
-                for d, i in self.model.directions_to_i.items()
-            ]
-            + [
-                _hist(f"ActorLogits/{d}_hist", actor_logits[:, :, i])
-                for d, i in self.model.directions_to_i.items()
-            ]
-            + [
-                _scalar(
-                    f"ActorGradients/{d}",
-                    tf.reduce_mean(action_logit_gradients[:, :, i]),
-                )
-                for d, i in self.model.directions_to_i.items()
-            ]
-            + [
-                _hist(f"ActorGradients/{d}_hist", action_logit_gradients[:, :, i])
-                for d, i in self.model.directions_to_i.items()
+                *[
+                    _hist(
+                        f"Performance/Actions/{d}",
+                        tf.cast(tf.equal(self.actions_ph, i), tf.float32),
+                    )
+                    for d, i in self.model.directions_to_i.items()
+                ],
+                *[
+                    _scalar(f"ActorLogits/{d}", tf.reduce_mean(actor_logits[:, :, i]))
+                    for d, i in self.model.directions_to_i.items()
+                ],
+                *[
+                    _hist(f"ActorLogits/{d}_hist", actor_logits[:, :, i])
+                    for d, i in self.model.directions_to_i.items()
+                ],
+                *[
+                    _scalar(
+                        f"ActorGradients/{d}",
+                        tf.reduce_mean(action_logit_gradients[:, :, i]),
+                    )
+                    for d, i in self.model.directions_to_i.items()
+                ],
+                *[
+                    _hist(f"ActorGradients/{d}_hist", action_logit_gradients[:, :, i])
+                    for d, i in self.model.directions_to_i.items()
+                ],
             ]
         )
         self.push_op_and_summaries = self.push_op, self.summary_op
