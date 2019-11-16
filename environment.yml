@@ -9,3 +9,5 @@ dependencies:
 - tqdm=4.32.1
 - numpy=1.16.4
 - tensorflow=1.13.1
+- pip:
+    - dacite=1.0.2

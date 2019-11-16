@@ -5,13 +5,13 @@ import os
 from tensorflow.python.util import nest
 from coopland.maze_lib import Direction
 from coopland.game_lib import Observation
+from coopland.models.a3c import config_lib
 
 
 class AgentModel:
-
-    input_data_size = 4 + 8 + 5  # visibility + corners + exit
-
-    def __init__(self):
+    def __init__(self, hparams: config_lib.AgentModelHParams):
+        self.hparams = hparams
+        self.input_data_size = 4 + 8 + 5  # visibility + corners + exit
         self.i_to_direction = Direction.list_clockwise()
         self.directions_to_i = {d: i for i, d in enumerate(self.i_to_direction)}
 
@@ -70,12 +70,7 @@ class AgentModel:
 
         rnn = tf.keras.layers.RNN(
             StackedLSTMCells(
-                [
-                    tf.keras.layers.LSTMCell(100),
-                    tf.keras.layers.LSTMCell(100),
-                    tf.keras.layers.LSTMCell(100),
-                    tf.keras.layers.LSTMCell(100),
-                ]
+                [tf.keras.layers.LSTMCell(units) for units in self.hparams.rnn_units]
             ),
             return_state=True,
             return_sequences=True,
@@ -89,8 +84,8 @@ class AgentModel:
         )
 
         rnn.build((None, None, self.input_data_size))
-        actor_head.build((None, None, rnn.cell.cells[-1].units))
-        critic_head.build((None, None, rnn.cell.cells[-1].units))
+        actor_head.build((None, None, self.hparams.rnn_units[-1]))
+        critic_head.build((None, None, self.hparams.rnn_units[-1]))
 
         saver = tf.train.Saver(
             [
@@ -104,22 +99,19 @@ class AgentModel:
     def create_agent_fn(
         self, agent_instance: "AgentInstance", session, greed_choice_prob=None
     ):
-        states = []
+        states = {}
 
         def agent_fn(*observation):
+            agent_id = observation[0]
             input_data, metadata = self.encode_observation(*observation)
 
             feed = {input_ph: [input_data]}
-            feed.update(zip(prev_states_phs, states))
+            feed.update(zip(prev_states_phs, states.get(agent_id, [])))
 
             output_data, new_states = session.run(
-                (
-                    (actor_probabilities_t, critic_t),
-                    new_states_t,
-                ),
-                feed,
+                ((actor_probabilities_t, critic_t), new_states_t), feed
             )
-            states[:] = new_states
+            states[agent_id] = new_states
             move = self.decode_nn_output(output_data, metadata, greed_choice_prob)
             return move
 
@@ -129,9 +121,7 @@ class AgentModel:
         agent_fn.init_before_game = init_before_game
         agent_fn.name = "RNN"
 
-        input_ph = tf.compat.v1.placeholder(
-            tf.float32, [1, None, self.input_data_size]
-        )
+        input_ph = tf.compat.v1.placeholder(tf.float32, [1, None, self.input_data_size])
         [
             actor_logits_t,
             actor_probabilities_t,

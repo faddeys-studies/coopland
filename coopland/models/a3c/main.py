@@ -1,30 +1,72 @@
 import logging
+import argparse
+import dataclasses
+import multiprocessing
+import os
+import dacite
+import yaml
 from coopland.game_lib import Direction
-from coopland.models.a3c.training import TrainingContext, run_training
+from coopland.models.a3c.training import run_training
+from coopland.models.a3c import config_lib
+
+
+@dataclasses.dataclass
+class ModelConfig:
+    model: config_lib.AgentModelHParams
+    training: config_lib.TrainingParams
+    maze_size: int
 
 
 def main():
+    cli = argparse.ArgumentParser()
+    cli.add_argument("model_dir")
+    cli.add_argument("--omp", action="store_true")
+    cli.add_argument("--no-threads", action="store_true")
+    opts = cli.parse_args()
     logging.basicConfig(level=logging.INFO)
-    ctx = TrainingContext(
-        discount_rate=0.9,
-        entropy_strength=0.0003,
-        sync_each_n_games=1,
-        learning_rate=0.001,
-        actor_loss_weight=1.0,
-        critic_loss_weight=0.25,
-        use_data_augmentation=False,
-        reward_function=reward_function,
-        regularization_strength=-1,
 
-        summaries_dir=".data/logs/rew2-2",
-        model_dir=".data/models/rew2-2",
-        do_visualize=True,
-        per_game_callback=per_game_callback,
+    model_dir = opts.model_dir
 
-        system_supports_omp=True,
-        omp_thread_limit=8,
-        multithreaded_training=True,
-        session_config=None,
+    with open(os.path.join(model_dir, "config.yml")) as f:
+        cfg = yaml.safe_load(f)
+    cfg = dacite.from_dict(ModelConfig, cfg)
+
+    if opts.no_threads:
+        perf_cfg = config_lib.PerformanceParams(
+            system_supports_omp=False,
+            omp_thread_limit=0,
+            multithreaded_training=False,
+            session_config=None,
+        )
+    elif opts.omp:
+        perf_cfg = config_lib.PerformanceParams(
+            system_supports_omp=True,
+            omp_thread_limit=multiprocessing.cpu_count() // 2,
+            multithreaded_training=True,
+            session_config=None,
+        )
+    else:
+        perf_cfg = config_lib.PerformanceParams(
+            system_supports_omp=False,
+            omp_thread_limit=0,
+            multithreaded_training=True,
+            session_config=None,
+        )
+
+    ctx = config_lib.TrainingContext(
+        model=cfg.model,
+        objective=config_lib.ObjectiveParams(
+            reward_function=reward_function,
+            maze_size=(cfg.maze_size, cfg.maze_size)
+        ),
+        training=cfg.training,
+        infrastructure=config_lib.TrainingInfrastructure(
+            model_dir=model_dir,
+            summaries_dir=model_dir,
+            do_visualize=True,
+            per_game_callback=per_game_callback,
+        ),
+        performance=perf_cfg,
     )
     run_training(ctx)
 
@@ -40,8 +82,8 @@ def reward_function(maze, replay, exit_pos):
             for d in _directions:
                 if maze.has_path(*pos, direction=d):
                     next_pos = d.apply(*pos)
-                    if next_pos not in distances or dist+1 < distances[next_pos]:
-                        _q.append((next_pos, dist+1))
+                    if next_pos not in distances or dist + 1 < distances[next_pos]:
+                        _q.append((next_pos, dist + 1))
 
     rewards = []
     for move, old_pos, new_pos in replay:
@@ -77,6 +119,7 @@ def get_visible_positions(visibility, position):
 
 
 _directions = Direction.list_clockwise()
+log = logging.getLogger("coopland.models.a3c.main")
 
 
 if __name__ == "__main__":

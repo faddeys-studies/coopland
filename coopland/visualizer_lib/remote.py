@@ -112,7 +112,7 @@ def main():
     print(f"Displaying from {server_address}")
 
     visualizer = Visualizer(
-        cell_size_px=100,
+        cell_size_px=50,
         sec_per_turn=0.5,
         move_animation_sec=0.4,
         autoplay=True,

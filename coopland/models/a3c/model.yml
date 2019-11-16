@@ -1,0 +1,12 @@
+training:
+  discount_rate: 0.9
+  entropy_strength: 0.0003
+  sync_each_n_games: 1
+  learning_rate: 0.001
+  actor_loss_weight: 1.0
+  critic_loss_weight: 0.25
+  use_data_augmentation: false
+model:
+  rnn_units: [100, 100, 100, 100]
+
+maze_size: 4
