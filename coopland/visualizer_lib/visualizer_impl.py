@@ -9,6 +9,7 @@ class Visualizer:
     sec_per_turn: float = 1.5
     move_animation_sec: float = 0.5
     autoplay: bool = False
+    autoend: bool = False
     title: str = "coopland"
     _position = None
 
@@ -71,8 +72,8 @@ class Visualizer:
             if current_t + delta_t > n_game_steps:
                 replay_loop_runs = False
                 current_replay_loop_token += 1
-                if self.autoplay:
-                    self._position = tk.winfo_x(), tk.winfo_y()
+                if self.autoend:
+                    _save_position()
                     tk.after(1000, tk.destroy)
             update_status_label()
 
@@ -113,6 +114,10 @@ class Visualizer:
         tk.bind("<Right>", lambda evt: replay_one_step(+1))
         tk.bind("<Left>", lambda evt: replay_one_step(-1))
         tk.bind("<space>", lambda evt: toggle_replay_loop())
+
+        def _save_position():
+            self._position = tk.winfo_x(), tk.winfo_y()
+        tk.protocol("WM_DELETE_WINDOW", _save_position())
 
         if self.autoplay:
             toggle_replay_loop()
