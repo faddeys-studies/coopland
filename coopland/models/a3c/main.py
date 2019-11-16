@@ -3,14 +3,6 @@ from coopland.game_lib import Direction
 from coopland.models.a3c.training import TrainingContext, run_training
 
 
-REWARD_NEW_EXPLORED = 0
-REWARD_WIN = 1.0
-REWARD_LOSE = -0.2
-REWARD_STAY = 0
-REWARD_REPEATED_VISIT = -0.1
-REPEATED_VISIT_MIN = 2
-
-
 def main():
     logging.basicConfig(level=logging.INFO)
     ctx = TrainingContext(
@@ -24,8 +16,8 @@ def main():
         reward_function=reward_function,
         regularization_strength=-1,
 
-        summaries_dir=".data/logs/try31",
-        model_dir=".data/models/try31",
+        summaries_dir=".data/logs/rew2-2",
+        model_dir=".data/models/rew2-2",
         do_visualize=True,
         per_game_callback=per_game_callback,
 
@@ -38,30 +30,27 @@ def main():
 
 
 def reward_function(maze, replay, exit_pos):
-    visited_points = {replay[0][1]: 1}
-    seen_points = get_visible_positions(replay[0][0].observation[1], replay[0][1])
-    total_points = maze.height * maze.width
+    distances = {}
+
+    _q = [(exit_pos, 0)]
+    while _q:
+        pos, dist = _q.pop(0)
+        if pos not in distances or dist < distances[pos]:
+            distances[pos] = dist
+            for d in _directions:
+                if maze.has_path(*pos, direction=d):
+                    next_pos = d.apply(*pos)
+                    if next_pos not in distances or dist+1 < distances[next_pos]:
+                        _q.append((next_pos, dist+1))
+
     rewards = []
     for move, old_pos, new_pos in replay:
-        r = 0.0
-        if old_pos == new_pos:
-            r += REWARD_STAY
-        if new_pos in visited_points:
-            # r -= 0.02 * visited_points[new_pos]
-            visited_points[new_pos] += 1
-        else:
-            visited_points[new_pos] = 1
-        if visited_points[new_pos] > REPEATED_VISIT_MIN:
-            r += (visited_points[new_pos] - REPEATED_VISIT_MIN) * REWARD_REPEATED_VISIT
-        visible_points = get_visible_positions(move.observation[1], old_pos)
-        new_visible = visible_points - seen_points
-        r += REWARD_NEW_EXPLORED * len(new_visible)
-        seen_points.update(new_visible)
-        if new_pos == exit_pos:
-            r += REWARD_WIN
+        d_old = distances[old_pos]
+        d_new = distances[new_pos]
+        r = 0.5 * (d_old - d_new)
         rewards.append(r)
-    if replay[-1][2] != exit_pos:
-        rewards[-1] += REWARD_LOSE
+    if replay[-1][2] == exit_pos:
+        rewards[-1] += 1.0
     return rewards
 
 

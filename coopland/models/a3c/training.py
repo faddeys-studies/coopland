@@ -57,7 +57,7 @@ class A3CWorker:
         self.id = worker_id
         self.ctx = train_context
         self.model = model
-        self.instance = model.build_layers(name=f"Worker{worker_id}")
+        self.instance: AgentInstance = model.build_layers(name=f"Worker{worker_id}")
         self.global_instance = global_instance
         self.agent_fn = model.create_agent_fn(
             self.instance, session, 1.001 if greed else None
@@ -73,22 +73,21 @@ class A3CWorker:
         ]
         batch_dim = 8 if self.ctx.use_data_augmentation else 1
         self.inputs_ph = tf.compat.v1.placeholder(
-            tf.float32, [batch_dim, None, AgentModel.INPUT_DATA_SIZE]
+            tf.float32, [batch_dim, None, model.input_data_size]
         )
         self.actions_ph = tf.compat.v1.placeholder(tf.int32, [batch_dim, None])
         self.reward_ph = tf.compat.v1.placeholder(tf.float32, [batch_dim, None])
         self.advantage_ph = tf.compat.v1.placeholder(tf.float32, [batch_dim, None])
-        actor_logits, actor_probs, critic_value, _, _, _, _ = self.instance.call(
-            self.inputs_ph
-        )
+        [
+            actor_logits,
+            actor_probs,
+            critic_value,
+            states_after,
+            states_before_phs,
+        ] = self.instance.call(self.inputs_ph)
+        del states_after
+        del states_before_phs
 
-        # responsible_actions = tf.squeeze(
-        #     tf.batch_gather(actor_probs, tf.expand_dims(self.actions_ph, -1)), -1
-        # )
-        # actor_loss_vector = (
-        #     -tf.math.log(responsible_actions + 1e-10) * self.advantage_ph
-        # )
-        # tf.losses.softmax_cross_entropy
         actor_loss_vector = (
             tf.nn.sparse_softmax_cross_entropy_with_logits(
                 labels=self.actions_ph, logits=actor_logits
@@ -100,45 +99,28 @@ class A3CWorker:
         actor_full_loss = actor_loss
         if self.ctx.entropy_strength and self.ctx.entropy_strength > 0.0:
             actor_full_loss -= self.ctx.entropy_strength * entropy
-        if self.ctx.regularization_strength and self.ctx.regularization_strength > 0.0:
-            reg_loss = tf.add_n(
-                [
-                    tf.reduce_sum(tf.square(v))
-                    for v in self.instance.actor_trainable_variables
-                ]
-            )
-            actor_full_loss += self.ctx.regularization_strength * reg_loss
-
-        actor_gradients = tf.gradients(
-            self.ctx.actor_loss_weight * actor_full_loss,
-            self.instance.actor_trainable_variables,
-        )
-        actor_gradients = [tf.clip_by_norm(g, +5) for g in actor_gradients]
-        actor_push_op = optimizer.apply_gradients(
-            list(zip(actor_gradients, global_instance.actor_trainable_variables))
-        )
 
         critic_loss_vector = tf.square(self.reward_ph - critic_value)
         critic_loss = tf.reduce_mean(critic_loss_vector)
-        critic_reg_loss = 0.0
+        reg_loss = 0.0
         if self.ctx.regularization_strength and self.ctx.regularization_strength > 0.0:
-            reg_loss = tf.add_n(
+            reg_loss = self.ctx.regularization_strength * tf.add_n(
                 [
                     tf.reduce_sum(tf.square(v))
-                    for v in self.instance.critic_trainable_variables
+                    for v in self.instance.get_variables()
                 ]
             )
-            critic_reg_loss += self.ctx.regularization_strength * reg_loss
-        critic_gradients = tf.gradients(
-            self.ctx.critic_loss_weight * critic_loss + critic_reg_loss,
-            self.instance.critic_trainable_variables,
-        )
-        critic_gradients = [tf.clip_by_norm(g, +5) for g in critic_gradients]
-        critic_push_op = optimizer.apply_gradients(
-            list(zip(critic_gradients, global_instance.critic_trainable_variables))
-        )
 
-        self.push_op = actor_push_op, critic_push_op
+        total_loss = self.ctx.actor_loss_weight * actor_full_loss + self.ctx.critic_loss_weight * critic_loss + reg_loss
+
+        gradients = tf.gradients(
+            total_loss,
+            self.instance.get_variables(),
+        )
+        gradients = [tf.clip_by_norm(g, +5) for g in gradients]
+        self.push_op = optimizer.apply_gradients(
+            list(zip(gradients, global_instance.get_variables()))
+        )
 
         [action_logit_gradients] = tf.gradients(
             self.ctx.actor_loss_weight * actor_full_loss, [actor_logits]
@@ -152,6 +134,7 @@ class A3CWorker:
                 _scalar("Performance/Advantage", tf.reduce_mean(self.advantage_ph)),
                 _scalar("Performance/NSteps", tf.shape(self.actions_ph)[1]),
                 _scalar("Train/Entropy", entropy),
+                _scalar("Train/TotalLoss", total_loss),
                 _scalar("Train/ActorLoss", actor_loss),
                 _hist("Train/ActorLoss_hist", actor_loss_vector),
                 _scalar("Train/CriticLoss", critic_loss),
