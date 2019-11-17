@@ -26,6 +26,7 @@ class A3CWorker:
         greed: bool,
         train_context: config_lib.TrainingContext,
     ):
+        assert not train_context.training.use_data_augmentation
         self.id = worker_id
         self.ctx = train_context
         train_params = self.ctx.training
@@ -44,20 +45,21 @@ class A3CWorker:
             tf.compat.v1.assign(local_var, global_var)
             for local_var, global_var in zip(local_variables, global_variables)
         ]
-        batch_dim = 8 if train_params.use_data_augmentation else 1
+        batch_dim = self.ctx.problem.n_agents
         self.inputs_ph = tf.compat.v1.placeholder(
             tf.float32, [batch_dim, None, model.input_data_size]
         )
         self.actions_ph = tf.compat.v1.placeholder(tf.int32, [batch_dim, None])
         self.reward_ph = tf.compat.v1.placeholder(tf.float32, [batch_dim, None])
         self.advantage_ph = tf.compat.v1.placeholder(tf.float32, [batch_dim, None])
+        self.episode_len_ph = tf.compat.v1.placeholder(tf.int32, [batch_dim])
         [
             actor_logits,
             actor_probs,
             critic_value,
             states_after,
             states_before_phs,
-        ] = self.instance.call(self.inputs_ph)
+        ] = self.instance.call(self.inputs_ph, self.episode_len_ph)
         del states_after
         del states_before_phs
 
@@ -145,34 +147,45 @@ class A3CWorker:
         self.push_op_and_summaries = self.push_op, self.summary_op
 
     def work_on_one_game(self, maze: Maze, game_index, summary_writer):
-        game = Game.generate_random(maze, self.agent_fn, 1)
+        game = Game.generate_random(maze, self.agent_fn, self.model.n_agents)
         self.agent_fn.init_before_game()
         replays = game.play(maze.height * maze.width * 3 // 2)
-        replay = replays[0]
-
-        immediate_reward = self.ctx.objective.reward_function(
-            maze, replay, game.exit_position
+        immediate_rewards = self.ctx.problem.reward_function(
+            maze, replays, game.exit_position
         )
-        reward = discount(immediate_reward, self.ctx.training.discount_rate)
-        critic_values = np.array([move.critic_value for move, _, _ in replay])
-        advantage = reward - critic_values
-        if self.ctx.training.use_data_augmentation:
-            input_vectors, action_ids = data_utils.get_augmented_training_batch(
-                replay, lambda obs: self.model.encode_observation(*obs)[0][0]
-            )
-        else:
+        rewards = []
+        critic_values = []
+        advantages = []
+        inputs_batch = []
+        actions_batch = []
+
+        for replay, immediate_reward in zip(replays, immediate_rewards):
+            reward = discount(immediate_reward, self.ctx.training.discount_rate)
+            critic_value = np.array([move.critic_value for move, _, _ in replay])
+            advantage = reward - critic_value
             input_vectors, action_ids = data_utils.get_training_batch(replay)
-        batch_size = input_vectors.shape[0]
+
+            rewards.append(reward)
+            critic_values.append(critic_value)
+            advantages.append(advantage)
+            inputs_batch.append(input_vectors[0])
+            actions_batch.append(action_ids[0])
 
         op = self.push_op if summary_writer is None else self.push_op_and_summaries
+
+        def padseq(x):
+            return tf.keras.preprocessing.sequence.pad_sequences(
+                x, dtype=x[0].dtype, padding="post"
+            )
 
         results = self.session.run(
             op,
             {
-                self.reward_ph: [reward] * batch_size,
-                self.advantage_ph: [advantage] * batch_size,
-                self.actions_ph: action_ids,
-                self.inputs_ph: input_vectors,
+                self.reward_ph: padseq(rewards),
+                self.advantage_ph: padseq(advantages),
+                self.actions_ph: padseq(actions_batch),
+                self.inputs_ph: padseq(inputs_batch),
+                self.episode_len_ph: [len(replay) for replay in replays],
             },
         )
 
@@ -182,7 +195,7 @@ class A3CWorker:
 
         if self.ctx.infrastructure.per_game_callback:
             self.ctx.infrastructure.per_game_callback(
-                replays, immediate_reward, reward, critic_values, advantage
+                replays, immediate_rewards, rewards, critic_values, advantages
             )
 
         return game, replays
@@ -255,7 +268,7 @@ def run_training(train_context: config_lib.TrainingContext):
     tf.compat.v1.reset_default_graph()
     graph = tf.compat.v1.get_default_graph()
     session = tf.compat.v1.Session(config=perf.session_config)
-    model = AgentModel(ctx.model)
+    model = AgentModel(ctx.model, n_agents=ctx.problem.n_agents)
     global_inst = model.build_layers()
     optimizer = tf.compat.v1.train.RMSPropOptimizer(ctx.training.learning_rate)
 
@@ -304,7 +317,7 @@ def run_training(train_context: config_lib.TrainingContext):
         "mazegen",
         lambda: maze_generator_loop(
             mazes_queue,
-            ctx.objective.maze_size,
+            ctx.problem.maze_size,
             stop_event.isSet,
             training_step,
             perf.n_workers,

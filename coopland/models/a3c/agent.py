@@ -9,9 +9,11 @@ from coopland.models.a3c import config_lib
 
 
 class AgentModel:
-    def __init__(self, hparams: config_lib.AgentModelHParams):
+    def __init__(self, hparams: config_lib.AgentModelHParams, n_agents: int = 1):
         self.hparams = hparams
         self.input_data_size = 4 + 8 + 5  # visibility + corners + exit
+        self.input_data_size += 4 * (n_agents - 1)  # +4 distances to rest of agents
+        self.n_agents = n_agents
         self.i_to_direction = Direction.list_clockwise()
         self.directions_to_i = {d: i for i, d in enumerate(self.i_to_direction)}
 
@@ -35,9 +37,17 @@ class AgentModel:
             exit_vec[-1] = exit_dist
         result.extend(exit_vec)
 
+        visible_agents_part = [0, 0, 0, 0] * (self.n_agents - 1)
+        for ag_id, direction, dist in visible_other_agents:
+            offs = 4 * (ag_id if ag_id < agent_id else ag_id - 1)
+            if dist == 0:
+                visible_agents_part[offs : offs + 4] = 1, 1, 1, 1
+            else:
+                visible_agents_part[offs + self.directions_to_i[direction]] = 1 / dist
+        result.extend(visible_agents_part)
+
         vector = np.array(result)
         assert vector.shape == (self.input_data_size,)
-        assert vector.dtype == np.int
         return (
             np.expand_dims(vector, 0),
             {"input_vector": vector, "full_observation": full_observation},
@@ -141,10 +151,13 @@ class AgentInstance:
     critic_head: "tf.keras.layers.Layer"
     saver: "tf.train.Saver"
 
-    def call(self, input_tensor):
+    def call(self, input_tensor, sequence_lengths_tensor=None, input_mask=None):
+        if input_mask is None:
+            if sequence_lengths_tensor is not None:
+                input_mask = build_input_mask(sequence_lengths_tensor)
 
         features, states_after, states_before_phs = _call_stateful_rnn(
-            self.rnn, input_tensor
+            self.rnn, input_tensor, input_mask
         )
         actor_logits = self.actor_head(features)
         critic_value = self.critic_head(features)[:, :, 0]
@@ -191,7 +204,7 @@ class Move:
         return f"<{self.direction} V={self.critic_value:3f} A={self.probabilities}>"
 
 
-def _call_stateful_rnn(rnn, input_tensor):
+def _call_stateful_rnn(rnn, input_tensor, input_mask=None):
     if input_tensor.get_shape().as_list()[0] is None:
         batch_size = tf.shape(input_tensor)[0]
         batch_size_value = None
@@ -208,7 +221,7 @@ def _call_stateful_rnn(rnn, input_tensor):
     )
     input_layer = tf.keras.Input(tensor=input_tensor)
 
-    out, *states = rnn(input_layer, initial_state=state_keras_inputs)
+    out, *states = rnn(input_layer, initial_state=state_keras_inputs, mask=input_mask)
 
     state_phs_flat = nest.flatten(state_phs)
     states_flat = nest.flatten(states)
@@ -230,9 +243,20 @@ class StackedLSTMCells(tf.keras.layers.StackedRNNCells):
     def call(self, inputs, states, constants=None, **kwargs):
         flatten_state_size = self._flatten_state_size
         self._flatten_state_size = False
-        try:
-            return super(StackedLSTMCells, self).call(
-                inputs, states, constants=None, **kwargs
-            )
-        finally:
-            self._flatten_state_size = flatten_state_size
+        output, new_states = super(StackedLSTMCells, self).call(
+            inputs, states, constants=None, **kwargs
+        )
+        self._flatten_state_size = flatten_state_size
+
+        new_states = nest.flatten(new_states)
+        return output, new_states
+
+
+def build_input_mask(sequence_lengths_tensor):
+    batch_size = tf.shape(sequence_lengths_tensor)[0]
+    max_seq_len = tf.reduce_max(sequence_lengths_tensor)
+    step_indices = tf.range(max_seq_len)
+    step_indices = tf.tile(tf.expand_dims(step_indices, 0), [batch_size, 1])
+    mask = tf.less(step_indices, tf.expand_dims(sequence_lengths_tensor, 1))
+    mask = tf.expand_dims(mask, axis=2)
+    return mask

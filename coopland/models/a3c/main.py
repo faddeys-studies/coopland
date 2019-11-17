@@ -15,6 +15,7 @@ class ModelConfig:
     model: config_lib.AgentModelHParams
     training: config_lib.TrainingParams
     maze_size: int
+    n_agents: int = 1
 
 
 def main():
@@ -55,9 +56,10 @@ def main():
 
     ctx = config_lib.TrainingContext(
         model=cfg.model,
-        objective=config_lib.ObjectiveParams(
+        problem=config_lib.ProblemParams(
             reward_function=reward_function,
-            maze_size=(cfg.maze_size, cfg.maze_size)
+            maze_size=(cfg.maze_size, cfg.maze_size),
+            n_agents=cfg.n_agents,
         ),
         training=cfg.training,
         infrastructure=config_lib.TrainingInfrastructure(
@@ -71,7 +73,7 @@ def main():
     run_training(ctx)
 
 
-def reward_function(maze, replay, exit_pos):
+def reward_function(maze, replays, exit_pos):
     distances = {}
 
     _q = [(exit_pos, 0)]
@@ -86,28 +88,49 @@ def reward_function(maze, replay, exit_pos):
                         _q.append((next_pos, dist + 1))
 
     rewards = []
-    for move, old_pos, new_pos in replay:
-        d_old = distances[old_pos]
-        d_new = distances[new_pos]
-        r = 0.5 * (d_old - d_new)
-        rewards.append(r)
-    if replay[-1][2] == exit_pos:
-        rewards[-1] += 1.0
+    most_far_reward = {}
+    most_far_dist = {}
+    most_far_n = {}
+    for replay in replays:
+        reward = []
+        for t, (move, old_pos, new_pos) in enumerate(replay):
+            d_old = distances[old_pos]
+            d_new = distances[new_pos]
+            r = 0.5 * (d_old - d_new)
+            if d_old == most_far_dist.get(t, 0):
+                most_far_n[t] += 1
+                most_far_reward[t] += r
+            elif d_old > most_far_dist.get(t, 0):
+                most_far_n[t] = 1
+                most_far_reward[t] = r
+                most_far_dist[t] = d_old
+            reward.append(r)
+        rewards.append(reward)
+    if all(replay[-1][2] == exit_pos for replay in replays):
+        for reward in rewards:
+            reward[-1] += 1.0
+    if len(replays) > 1:
+        for reward in rewards:
+            for t in range(len(reward)):
+                reward[t] += most_far_reward.get(t, 0) / most_far_n.get(t, 1)
     return rewards
 
 
-def per_game_callback(replays, immediate_reward, reward, critic_values, advantage):
-    for (move, _, _), r_i, r_d, v, a in zip(
-        replays[0], immediate_reward, reward, critic_values, advantage
+def per_game_callback(replays, immediate_rewards, rewards, critic_values, advantages):
+    for replay, immediate_reward, reward, critic_value, advantage in zip(
+            replays, immediate_rewards, rewards, critic_values, advantages
     ):
-        for i, d in enumerate(Direction.list_clockwise()):
-            dir_msg = f"{d.upper()[:1]}({move.probabilities[i]:.2f}) "
-            if i == move.direction_idx:
-                dir_msg = "*" + dir_msg
-            move.debug_text += dir_msg
-        move.debug_text += (
-            f" V={v:.2f}\n" f"Ri={r_i:.2f} " f"Rd={r_d:.2f} " f"A={a:.2f}"
-        )
+        for (move, _, _), r_i, r_d, v, a in zip(
+            replay, immediate_reward, reward, critic_value, advantage
+        ):
+            for i, d in enumerate(Direction.list_clockwise()):
+                dir_msg = f"{d.upper()[:1]}({move.probabilities[i]:.2f}) "
+                if i == move.direction_idx:
+                    dir_msg = "*" + dir_msg
+                move.debug_text += dir_msg
+            move.debug_text += (
+                f" V={v:.2f}\n" f"Ri={r_i:.2f} " f"Rd={r_d:.2f} " f"A={a:.2f}"
+            )
 
 
 def get_visible_positions(visibility, position):

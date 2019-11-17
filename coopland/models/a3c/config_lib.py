@@ -10,17 +10,18 @@ class AgentModelHParams:
 @dataclass
 class TrainingContext:
     model: "AgentModelHParams"
-    objective: "ObjectiveParams"
+    problem: "ProblemParams"
     training: "TrainingParams"
     infrastructure: "TrainingInfrastructure"
     performance: "PerformanceParams"
 
 
 @dataclass
-class ObjectiveParams:
+class ProblemParams:
     reward_function: Callable
     """(maze, replay, exit_pos) -> [N], where N - number of game steps"""
     maze_size: Tuple[int, int]
+    n_agents: int = 1
 
 
 @dataclass

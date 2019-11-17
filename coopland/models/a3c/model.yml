@@ -9,4 +9,5 @@ training:
 model:
   rnn_units: [100, 100, 100, 100]
 
-maze_size: 4
+maze_size: 6
+n_agents: 3
