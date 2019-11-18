@@ -147,7 +147,7 @@ class A3CWorker:
         self.push_op_and_summaries = self.push_op, self.summary_op
 
     def work_on_one_game(self, maze: Maze, game_index, summary_writer):
-        game = Game.generate_random(maze, self.agent_fn, self.model.n_agents)
+        game = Game.generate_random(maze, self.agent_fn, self.ctx.problem.n_agents)
         self.agent_fn.init_before_game()
         replays = game.play(maze.height * maze.width * 3 // 2)
         immediate_rewards = self.ctx.problem.reward_function(
@@ -228,11 +228,15 @@ def discount(rewards, gamma):
     return discounted_rewards
 
 
-def maze_generator_loop(mazes_queue, maze_size, should_stop, initial_step, n_workers):
+def maze_generator_loop(
+    mazes_queue, maze_size, should_stop, initial_step, end_step, n_workers
+):
     i = initial_step
     while not should_stop():
-        maze = generate_random_maze(*maze_size, 0.01)
         i += 1
+        if end_step is not None and i > end_step:
+            break
+        maze = generate_random_maze(*maze_size, 0.01)
         while not should_stop():
             try:
                 mazes_queue.put((i, maze), timeout=1)
@@ -240,11 +244,12 @@ def maze_generator_loop(mazes_queue, maze_size, should_stop, initial_step, n_wor
                 pass
             else:
                 break
-    try:
-        while True:
-            mazes_queue.get_nowait()
-    except Empty:
-        pass
+    if should_stop():
+        try:
+            while True:
+                mazes_queue.get_nowait()
+        except Empty:
+            pass
     for _ in range(n_workers):
         mazes_queue.put((None, None))
 
@@ -268,7 +273,7 @@ def run_training(train_context: config_lib.TrainingContext):
     tf.compat.v1.reset_default_graph()
     graph = tf.compat.v1.get_default_graph()
     session = tf.compat.v1.Session(config=perf.session_config)
-    model = AgentModel(ctx.model, n_agents=ctx.problem.n_agents)
+    model = AgentModel(ctx.model)
     global_inst = model.build_layers()
     optimizer = tf.compat.v1.train.RMSPropOptimizer(ctx.training.learning_rate)
 
@@ -303,6 +308,7 @@ def run_training(train_context: config_lib.TrainingContext):
 
     mazes_queue = Queue(maxsize=perf.n_workers * 2)
     stop_event = threading.Event()
+    lock = threading.Lock()
     vis_server = VisualizerServer(9876) if infr.do_visualize else None
     all_threads = []
 
@@ -313,13 +319,14 @@ def run_training(train_context: config_lib.TrainingContext):
         all_threads.append(thread)
         return thread
 
-    launch_thread(
+    mazegen_thread = launch_thread(
         "mazegen",
         lambda: maze_generator_loop(
             mazes_queue,
             ctx.problem.maze_size,
             stop_event.isSet,
             training_step,
+            infr.train_until_n_games,
             perf.n_workers,
         ),
     )
@@ -328,7 +335,8 @@ def run_training(train_context: config_lib.TrainingContext):
         nonlocal training_step
         if vis_server:
             vis_server.add_replay(game_id, game, replays)
-        training_step = game_id
+        with lock:
+            training_step = max(game_id, training_step)
 
     for i, worker in enumerate(workers):
         launch_thread(
@@ -340,20 +348,23 @@ def run_training(train_context: config_lib.TrainingContext):
         )
 
     try:
-        while True:
-            time.sleep(600)
+        while mazegen_thread.is_alive():
+            mazegen_thread.join(600)
+            if not mazegen_thread.is_alive():
+                break
             with utils.interrupt_atomic():
                 log.info("Saving model at step %s", training_step)
                 global_inst.save_variables(session, infr.model_dir, training_step)
     except KeyboardInterrupt:
-        with utils.interrupt_atomic():
-            log.info("Saving model at step %s", training_step)
-            global_inst.save_variables(session, infr.model_dir, training_step)
-        log.info("\nInterrupted, shutting down gracefully")
-        stop_event.set()
-        for t in all_threads:
-            log.info("joining %s", t.name)
-            t.join()
+        log.info("\nInterrupted")
+    log.info("Shutting down gracefully")
+    stop_event.set()
+    for t in all_threads:
+        log.info("joining %s", t.name)
+        t.join()
+    with utils.interrupt_atomic():
+        log.info("Saving model at step %s", training_step)
+        global_inst.save_variables(session, infr.model_dir, training_step)
 
     summary_writer.close()
 

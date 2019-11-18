@@ -9,11 +9,12 @@ from coopland.models.a3c import config_lib
 
 
 class AgentModel:
-    def __init__(self, hparams: config_lib.AgentModelHParams, n_agents: int = 1):
+    def __init__(self, hparams: config_lib.AgentModelHParams):
         self.hparams = hparams
         self.input_data_size = 4 + 8 + 5  # visibility + corners + exit
-        self.input_data_size += 4 * (n_agents - 1)  # +4 distances to rest of agents
-        self.n_agents = n_agents
+        if self.hparams.use_visible_agents:
+            # +4 distances to other agents
+            self.input_data_size += 4 * (hparams.max_agents - 1)
         self.i_to_direction = Direction.list_clockwise()
         self.directions_to_i = {d: i for i, d in enumerate(self.i_to_direction)}
 
@@ -37,14 +38,18 @@ class AgentModel:
             exit_vec[-1] = exit_dist
         result.extend(exit_vec)
 
-        visible_agents_part = [0, 0, 0, 0] * (self.n_agents - 1)
-        for ag_id, direction, dist in visible_other_agents:
-            offs = 4 * (ag_id if ag_id < agent_id else ag_id - 1)
-            if dist == 0:
-                visible_agents_part[offs : offs + 4] = 1, 1, 1, 1
-            else:
-                visible_agents_part[offs + self.directions_to_i[direction]] = 1 / dist
-        result.extend(visible_agents_part)
+        if self.hparams.use_visible_agents:
+            visible_agents_part = [0, 0, 0, 0] * (self.hparams.max_agents - 1)
+            for ag_id, direction, dist in visible_other_agents:
+                if ag_id >= self.hparams.max_agents:
+                    continue
+                offs = 4 * (ag_id if ag_id < agent_id else ag_id - 1)
+                if dist == 0:
+                    visible_agents_part[offs : offs + 4] = 1, 1, 1, 1
+                else:
+                    i = offs + self.directions_to_i[direction]
+                    visible_agents_part[i] = 1 / dist
+            result.extend(visible_agents_part)
 
         vector = np.array(result)
         assert vector.shape == (self.input_data_size,)
@@ -180,14 +185,12 @@ class AgentInstance:
         self.saver.save(
             session, checkpoint_path, global_step=step, write_meta_graph=False
         )
-        with open(os.path.join(directory, "step.txt"), "w") as f:
-            f.write(str(step))
 
     def load_variables(self, session, directory):
         save_path = tf.train.latest_checkpoint(directory)
         self.saver.restore(session, save_path)
-        with open(os.path.join(directory, "step.txt"), "r") as f:
-            return int(f.read().strip())
+        step = int(save_path.rpartition("-")[2])
+        return step
 
 
 @dataclasses.dataclass

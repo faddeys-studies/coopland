@@ -15,7 +15,6 @@ class ModelConfig:
     model: config_lib.AgentModelHParams
     training: config_lib.TrainingParams
     maze_size: int
-    n_agents: int = 1
 
 
 def main():
@@ -23,6 +22,8 @@ def main():
     cli.add_argument("model_dir")
     cli.add_argument("--omp", action="store_true")
     cli.add_argument("--no-threads", action="store_true")
+    cli.add_argument("--n-agents", type=int)
+    cli.add_argument("--train-until-n-games", type=int)
     opts = cli.parse_args()
     logging.basicConfig(level=logging.INFO)
 
@@ -59,7 +60,7 @@ def main():
         problem=config_lib.ProblemParams(
             reward_function=reward_function,
             maze_size=(cfg.maze_size, cfg.maze_size),
-            n_agents=cfg.n_agents,
+            n_agents=opts.n_agents or cfg.model.max_agents,
         ),
         training=cfg.training,
         infrastructure=config_lib.TrainingInfrastructure(
@@ -67,6 +68,7 @@ def main():
             summaries_dir=model_dir,
             do_visualize=True,
             per_game_callback=per_game_callback,
+            train_until_n_games=opts.train_until_n_games
         ),
         performance=perf_cfg,
     )
@@ -88,31 +90,16 @@ def reward_function(maze, replays, exit_pos):
                         _q.append((next_pos, dist + 1))
 
     rewards = []
-    most_far_reward = {}
-    most_far_dist = {}
-    most_far_n = {}
     for replay in replays:
         reward = []
         for t, (move, old_pos, new_pos) in enumerate(replay):
             d_old = distances[old_pos]
             d_new = distances[new_pos]
             r = 0.5 * (d_old - d_new)
-            if d_old == most_far_dist.get(t, 0):
-                most_far_n[t] += 1
-                most_far_reward[t] += r
-            elif d_old > most_far_dist.get(t, 0):
-                most_far_n[t] = 1
-                most_far_reward[t] = r
-                most_far_dist[t] = d_old
             reward.append(r)
-        rewards.append(reward)
-    if all(replay[-1][2] == exit_pos for replay in replays):
-        for reward in rewards:
+        if replay[-1][2] == exit_pos:
             reward[-1] += 1.0
-    if len(replays) > 1:
-        for reward in rewards:
-            for t in range(len(reward)):
-                reward[t] += most_far_reward.get(t, 0) / most_far_n.get(t, 1)
+        rewards.append(reward)
     return rewards
 
 

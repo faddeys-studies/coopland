@@ -8,6 +8,8 @@ training:
   use_data_augmentation: false
 model:
   rnn_units: [100, 100, 100, 100]
+  max_agents: 3
+  use_visible_agents: true
+  use_communication: false
 
-maze_size: 6
-n_agents: 3
+maze_size: 5

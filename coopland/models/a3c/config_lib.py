@@ -1,10 +1,14 @@
 from dataclasses import dataclass
-from typing import List, Callable, Tuple
+from typing import List, Callable, Tuple, Optional
 
 
 @dataclass
 class AgentModelHParams:
     rnn_units: List[int]
+    comm_units: Optional[List[int]]
+    max_agents: int
+    use_visible_agents: bool
+    use_communication: bool
 
 
 @dataclass
@@ -41,6 +45,7 @@ class TrainingInfrastructure:
     summaries_dir: str
     model_dir: str
     do_visualize: bool
+    train_until_n_games: int = None
     per_game_callback: Callable = None
     """(replays, immediate_reward, reward, critic_values, advantage) -> None"""
 
