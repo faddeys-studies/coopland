@@ -10,6 +10,7 @@ model:
   rnn_units: [100, 100, 100, 100]
   max_agents: 3
   use_visible_agents: true
-  use_communication: false
+  use_communication: true
+  comm_units: [100, 100]
 
 maze_size: 5

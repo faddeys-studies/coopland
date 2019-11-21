@@ -1,7 +1,6 @@
 import tensorflow as tf
 import numpy as np
 import threading
-import time
 import os
 import tqdm
 import multiprocessing
@@ -53,13 +52,22 @@ class A3CWorker:
         self.reward_ph = tf.compat.v1.placeholder(tf.float32, [batch_dim, None])
         self.advantage_ph = tf.compat.v1.placeholder(tf.float32, [batch_dim, None])
         self.episode_len_ph = tf.compat.v1.placeholder(tf.int32, [batch_dim])
+        self.visible_others_ph = tf.compat.v1.placeholder(
+            tf.int32, [batch_dim, None, None]
+        )
         [
             actor_logits,
             actor_probs,
             critic_value,
             states_after,
             states_before_phs,
-        ] = self.instance.call(self.inputs_ph, self.episode_len_ph)
+        ] = self.instance.call(
+            self.inputs_ph,
+            self.episode_len_ph,
+            others_indices=self.visible_others_ph
+            if self.model.hparams.use_communication
+            else None,
+        )
         del states_after
         del states_before_phs
 
@@ -109,6 +117,14 @@ class A3CWorker:
                 _scalar("Performance/Reward", tf.reduce_mean(self.reward_ph)),
                 _scalar("Performance/Advantage", tf.reduce_mean(self.advantage_ph)),
                 _scalar("Performance/NSteps", tf.shape(self.actions_ph)[1]),
+                _scalar(
+                    "Performance/NSteps_mean",
+                    tf.reduce_mean(tf.cast(self.episode_len_ph, tf.float32)),
+                ),
+                _scalar(
+                    "Performance/Communications",
+                    tf.reduce_sum(tf.cast(self.visible_others_ph >= 0, tf.float32)) / 2,
+                ),
                 _scalar("Train/Entropy", entropy),
                 _scalar("Train/TotalLoss", total_loss),
                 _scalar("Train/ActorLoss", actor_loss),
@@ -158,25 +174,40 @@ class A3CWorker:
         advantages = []
         inputs_batch = []
         actions_batch = []
+        visible_others_batch = []
+
+        def padseq(x, value=0.0, where="post"):
+            return tf.keras.preprocessing.sequence.pad_sequences(
+                x, dtype=x[0].dtype, padding=where, value=value
+            )
 
         for replay, immediate_reward in zip(replays, immediate_rewards):
             reward = discount(immediate_reward, self.ctx.training.discount_rate)
             critic_value = np.array([move.critic_value for move, _, _ in replay])
             advantage = reward - critic_value
             input_vectors, action_ids = data_utils.get_training_batch(replay)
+            visible_others = padseq(
+                [
+                    np.array([ag_id for ag_id, _, _ in move.observation[3]] or [-1])
+                    for move, _, _ in replay
+                ],
+                value=-1, where="pre"
+            )
 
             rewards.append(reward)
             critic_values.append(critic_value)
             advantages.append(advantage)
             inputs_batch.append(input_vectors[0])
             actions_batch.append(action_ids[0])
+            visible_others_batch.append(visible_others)
+        max_t, max_vo = np.max([vo.shape for vo in visible_others_batch], axis=0)
+        visible_others_batch = np.array([
+            np.pad(vo, [(0, max_t-vo.shape[0]), (max_vo - vo.shape[1], 0)],
+                   mode='constant', constant_values=-1)
+            for vo in visible_others_batch
+        ])
 
         op = self.push_op if summary_writer is None else self.push_op_and_summaries
-
-        def padseq(x):
-            return tf.keras.preprocessing.sequence.pad_sequences(
-                x, dtype=x[0].dtype, padding="post"
-            )
 
         results = self.session.run(
             op,
@@ -185,6 +216,7 @@ class A3CWorker:
                 self.advantage_ph: padseq(advantages),
                 self.actions_ph: padseq(actions_batch),
                 self.inputs_ph: padseq(inputs_batch),
+                self.visible_others_ph: visible_others_batch,
                 self.episode_len_ph: [len(replay) for replay in replays],
             },
         )
