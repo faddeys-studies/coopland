@@ -411,7 +411,7 @@ class RNNCellWithStateCommunication(tf.keras.layers.Layer):
 
         paths = list(nest.yield_flat_paths(states))
         states_flat = nest.flatten(states)
-        # states_flat[paths.index(self._application_path)] = final_comm_states
+        states_flat[paths.index(self._application_path)] = final_comm_states
         states_after_comm = nest.pack_sequence_as(states, states_flat)
 
         outputs, new_states = self.cell.call(
