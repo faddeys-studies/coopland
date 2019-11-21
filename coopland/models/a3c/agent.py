@@ -137,10 +137,10 @@ class AgentModel:
                     if other_prev_state:
                         state_to_add = rnn_cell.get_comm_state(other_prev_state)
                     else:
-                        state_to_add = np.zeros([rnn_cell.comm_state_size])
+                        state_to_add = np.zeros([1, rnn_cell.comm_state_size])
                     other_agent_states.append(state_to_add)
                 if other_agent_states:
-                    other_agent_states = np.stack(other_agent_states, axis=0)
+                    other_agent_states = np.concatenate(other_agent_states, axis=0)
                 else:
                     other_agent_states = np.zeros([1, rnn_cell.comm_state_size])
                 feed[others_state_ph] = other_agent_states
@@ -149,6 +149,7 @@ class AgentModel:
                 ((actor_probabilities_t, critic_t), new_states_t), feed
             )
             states[agent_id, t] = new_states
+            times[agent_id] = t
             states.pop((agent_id, t - 2), None)
             move = self.decode_nn_output(output_data, metadata, greed_choice_prob)
             return move
@@ -418,8 +419,8 @@ class RNNCellWithStateCommunication(tf.keras.layers.Layer):
             inputs, states_after_comm, constants, **kwargs
         )
         new_states = nest.map_structure(
-            lambda bef, aft: tf.where(real_step, aft, bef),
-            states_after_comm, new_states
+            lambda new_st, st: tf.where(real_step, new_st, st),
+            new_states, states_after_comm
         )
         return outputs, new_states
 
