@@ -183,10 +183,7 @@ class A3CWorker:
         game = Game.generate_random(maze, self.agent_fn, self.ctx.problem.n_agents)
         self.agent_fn.init_before_game()
         replays = game.play(maze.height * maze.width * 3 // 2)
-        immediate_rewards = self.ctx.problem.reward_function(
-            maze, replays, game.exit_position
-        )
-        rewards = []
+        rewards = self.ctx.problem.reward_function(maze, replays, game.exit_position)
         critic_values = []
         advantages = []
         inputs_batch = []
@@ -198,8 +195,7 @@ class A3CWorker:
                 x, dtype=x[0].dtype, padding=where, value=value
             )
 
-        for replay, immediate_reward in zip(replays, immediate_rewards):
-            reward = discount(immediate_reward, self.ctx.training.discount_rate)
+        for replay, reward in zip(replays, rewards):
             critic_value = np.array([move.critic_value for move, _, _ in replay])
             advantage = reward - critic_value
             input_vectors, action_ids = data_utils.get_training_batch(replay)
@@ -212,7 +208,6 @@ class A3CWorker:
                 where="pre",
             )
 
-            rewards.append(reward)
             critic_values.append(critic_value)
             advantages.append(advantage)
             inputs_batch.append(input_vectors[0])
@@ -251,13 +246,7 @@ class A3CWorker:
 
         if self.ctx.infrastructure.per_game_callback:
             self.ctx.infrastructure.per_game_callback(
-                self.id,
-                game_index,
-                replays,
-                immediate_rewards,
-                rewards,
-                critic_values,
-                advantages,
+                self.id, game_index, replays, rewards, critic_values, advantages
             )
 
         return game, replays
@@ -278,16 +267,6 @@ class A3CWorker:
             if callback:
                 callback(game_index, game, replays)
             del maze, game, replays
-
-
-def discount(rewards, gamma):
-    discounted_rewards = np.zeros_like(rewards)
-    next_r = discounted_rewards[-1] = rewards[-1]
-    for i in range(len(rewards) - 2, -1, -1):
-        r = rewards[i]
-        next_r = gamma * next_r + r
-        discounted_rewards[i] = next_r
-    return discounted_rewards
 
 
 def maze_generator_loop(

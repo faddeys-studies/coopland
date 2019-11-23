@@ -7,6 +7,8 @@ import dacite
 import yaml
 import tqdm
 import functools
+import itertools
+import numpy as np
 from coopland.game_lib import Direction
 from coopland.models.a3c.training import run_training
 from coopland.models.a3c import config_lib
@@ -55,7 +57,7 @@ def main():
     ctx = config_lib.TrainingContext(
         model=cfg.model,
         problem=config_lib.ProblemParams(
-            reward_function=reward_function,
+            reward_function=reward_function(cfg.reward),
             maze_size=(cfg.maze_size, cfg.maze_size),
             n_agents=opts.n_agents or cfg.model.max_agents,
         ),
@@ -73,59 +75,77 @@ def main():
     pb.close()
 
 
-def reward_function(maze, replays, exit_pos):
-    distances = {}
+def reward_function(params: config_lib.RewardParams):
+    def compute_reward(maze, replays, exit_pos):
+        distances = {}
 
-    _q = [(exit_pos, 0)]
-    while _q:
-        pos, dist = _q.pop(0)
-        if pos not in distances or dist < distances[pos]:
-            distances[pos] = dist
-            for d in _directions:
-                if maze.has_path(*pos, direction=d):
-                    next_pos = d.apply(*pos)
-                    if next_pos not in distances or dist + 1 < distances[next_pos]:
-                        _q.append((next_pos, dist + 1))
+        _q = [(exit_pos, 0)]
+        while _q:
+            pos, dist = _q.pop(0)
+            if pos not in distances or dist < distances[pos]:
+                distances[pos] = dist
+                for d in _directions:
+                    if maze.has_path(*pos, direction=d):
+                        next_pos = d.apply(*pos)
+                        if next_pos not in distances or dist + 1 < distances[next_pos]:
+                            _q.append((next_pos, dist + 1))
 
-    rewards = []
-    for replay in replays:
-        reward = []
-        for t, (move, old_pos, new_pos) in enumerate(replay):
-            d_old = distances[old_pos]
-            d_new = distances[new_pos]
-            r = 0.5 * (d_old - d_new)
-            reward.append(r)
-        if replay[-1][2] == exit_pos:
-            reward[-1] += 1.0
-        rewards.append(reward)
-    return rewards
+        rewards = []
+        for replay in replays:
+            reward = []
+            for t, (move, old_pos, new_pos) in enumerate(replay):
+                d_old = distances[old_pos]
+                d_new = distances[new_pos]
+                r = params.step_reward * (d_old - d_new)
+                reward.append(r)
+            rewards.append(reward)
+        if len(rewards) > 1:
+            average_reward = []
+            for rew_tup in itertools.zip_longest(*rewards):
+                rew_tup = [r for r in rew_tup if r is not None]
+                average_reward.append(sum(rew_tup) / len(rew_tup))
+        else:
+            average_reward = rewards[0]
+        average_reward = np.array(average_reward)
+        if all(replay[-1][2] == exit_pos for replay in replays):
+            average_reward[-1] += params.exit_reward
+        average_reward = discount(average_reward, params.discount_rate)
+        rewards = [average_reward[:len(replay)] for replay in replays]
+        return rewards
+
+    return compute_reward
+
+
+def discount(rewards, gamma):
+    discounted_rewards = np.zeros_like(rewards)
+    next_r = discounted_rewards[-1] = rewards[-1]
+    for i in range(len(rewards) - 2, -1, -1):
+        r = rewards[i]
+        next_r = gamma * next_r + r
+        discounted_rewards[i] = next_r
+    return discounted_rewards
 
 
 def per_game_callback(
     worker_id,
     game_index,
     replays,
-    immediate_rewards,
     rewards,
     critic_values,
     advantages,
     progressbar: tqdm.tqdm,
 ):
     del worker_id
-    for replay, immediate_reward, reward, critic_value, advantage in zip(
-        replays, immediate_rewards, rewards, critic_values, advantages
+    for replay, reward, critic_value, advantage in zip(
+        replays, rewards, critic_values, advantages
     ):
-        for (move, _, _), r_i, r_d, v, a in zip(
-            replay, immediate_reward, reward, critic_value, advantage
-        ):
+        for (move, _, _), r, v, a in zip(replay, reward, critic_value, advantage):
             for i, d in enumerate(Direction.list_clockwise()):
                 dir_msg = f"{d.upper()[:1]}({move.probabilities[i]:.2f}) "
                 if i == move.direction_idx:
                     dir_msg = "*" + dir_msg
                 move.debug_text += dir_msg
-            move.debug_text += (
-                f" V={v:.2f}\n" f"Ri={r_i:.2f} " f"Rd={r_d:.2f} " f"A={a:.2f}"
-            )
+            move.debug_text += f" V={v:.2f} R={r:.2f} A={a:.2f}"
     with _pb_lock:
         progressbar.n = max(game_index, progressbar.n)
         progressbar.update(0)

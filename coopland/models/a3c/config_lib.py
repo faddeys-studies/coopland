@@ -33,7 +33,6 @@ class TrainingParams:
     learning_rate: float
     actor_loss_weight: float
     critic_loss_weight: float
-    discount_rate: float
     entropy_strength: Optional[float] = None
     sync_each_n_games: int = 1
     use_data_augmentation: bool = False
@@ -67,7 +66,16 @@ class PerformanceParams:
 
 
 @dataclass
+class RewardParams:
+    step_reward: float
+    exit_reward: float
+    exit_reward_diff_decay: float
+    discount_rate: float = 0.9
+
+
+@dataclass
 class ModelConfig:
     model: AgentModelHParams
     training: TrainingParams
     maze_size: int
+    reward: RewardParams

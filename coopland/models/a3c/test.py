@@ -14,8 +14,8 @@ def main():
     cli.add_argument("model_dir")
     cli.add_argument("--size", type=int)
     cli.add_argument("--n-agents", type=int)
-    cli.add_argument("--n-games", type=int, default=1000)
-    cli.add_argument("--max-game-len", type=int)
+    cli.add_argument("--n-games", type=int, default=10000)
+    cli.add_argument("--max-game-len", type=int, default=100)
     cli.add_argument("--out")
     opts = cli.parse_args()
 
