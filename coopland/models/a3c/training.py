@@ -71,17 +71,34 @@ class A3CWorker:
         del states_after
         del states_before_phs
 
-        actor_loss_vector = (
-            tf.nn.sparse_softmax_cross_entropy_with_logits(
-                labels=self.actions_ph, logits=actor_logits
+        if train_params.actor_label_smoothing is not None:
+            smooth = train_params.actor_label_smoothing
+            n_actions = 4
+            actions = tf.one_hot(self.actions_ph, n_actions)
+            actions = (1 - smooth) * actions + smooth / n_actions
+            actor_loss_vector = (
+                tf.nn.softmax_cross_entropy_with_logits_v2(
+                    labels=actions, logits=actor_logits
+                )
+                * self.advantage_ph
             )
-            * self.advantage_ph
-        )
+        else:
+            actor_loss_vector = (
+                tf.nn.sparse_softmax_cross_entropy_with_logits(
+                    labels=self.actions_ph, logits=actor_logits
+                )
+                * self.advantage_ph
+            )
         actor_loss = tf.reduce_sum(actor_loss_vector)
         entropy = -tf.reduce_sum(actor_probs * tf.math.log(actor_probs + 1e-10))
         actor_full_loss = actor_loss
-        if train_params.entropy_strength and train_params.entropy_strength > 0.0:
+        if train_params.entropy_strength is not None:
             actor_full_loss -= train_params.entropy_strength * entropy
+        if train_params.logit_regularization_strength is not None:
+            logits_l2_loss = tf.reduce_sum(tf.square(actor_logits))
+            actor_full_loss += (
+                train_params.logit_regularization_strength * logits_l2_loss
+            )
 
         critic_loss_vector = tf.square(self.reward_ph - critic_value)
         critic_loss = tf.reduce_mean(critic_loss_vector)
@@ -191,7 +208,8 @@ class A3CWorker:
                     np.array([ag_id for ag_id, _, _ in move.observation[3]] or [-1])
                     for move, _, _ in replay
                 ],
-                value=-1, where="pre"
+                value=-1,
+                where="pre",
             )
 
             rewards.append(reward)
@@ -201,11 +219,17 @@ class A3CWorker:
             actions_batch.append(action_ids[0])
             visible_others_batch.append(visible_others)
         max_t, max_vo = np.max([vo.shape for vo in visible_others_batch], axis=0)
-        visible_others_batch = np.array([
-            np.pad(vo, [(0, max_t-vo.shape[0]), (max_vo - vo.shape[1], 0)],
-                   mode='constant', constant_values=-1)
-            for vo in visible_others_batch
-        ])
+        visible_others_batch = np.array(
+            [
+                np.pad(
+                    vo,
+                    [(0, max_t - vo.shape[0]), (max_vo - vo.shape[1], 0)],
+                    mode="constant",
+                    constant_values=-1,
+                )
+                for vo in visible_others_batch
+            ]
+        )
 
         op = self.push_op if summary_writer is None else self.push_op_and_summaries
 
@@ -227,7 +251,13 @@ class A3CWorker:
 
         if self.ctx.infrastructure.per_game_callback:
             self.ctx.infrastructure.per_game_callback(
-                replays, immediate_rewards, rewards, critic_values, advantages
+                self.id,
+                game_index,
+                replays,
+                immediate_rewards,
+                rewards,
+                critic_values,
+                advantages,
             )
 
         return game, replays
@@ -238,7 +268,7 @@ class A3CWorker:
             game_index, maze = mazes_queue.get()
             if maze is None:
                 break
-            log.info(f"W={self.id}: running #{game_index}")
+            # log.info(f"W={self.id}: running #{game_index}")
 
             epoch = game_index // self.ctx.training.sync_each_n_games
             if epoch != last_epoch:

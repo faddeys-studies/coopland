@@ -156,6 +156,7 @@ class AgentModel:
 
         def init_before_game():
             states.clear()
+            times.clear()
 
         agent_fn.init_before_game = init_before_game
         agent_fn.name = "RNN"

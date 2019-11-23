@@ -34,10 +34,12 @@ class TrainingParams:
     actor_loss_weight: float
     critic_loss_weight: float
     discount_rate: float
-    entropy_strength: float
+    entropy_strength: Optional[float] = None
     sync_each_n_games: int = 1
     use_data_augmentation: bool = False
-    regularization_strength: float = -1
+    regularization_strength: Optional[float] = None
+    logit_regularization_strength: Optional[float] = None
+    actor_label_smoothing: Optional[float] = None
 
 
 @dataclass
@@ -47,7 +49,12 @@ class TrainingInfrastructure:
     do_visualize: bool
     train_until_n_games: int = None
     per_game_callback: Callable = None
-    """(replays, immediate_reward, reward, critic_values, advantage) -> None"""
+    """
+    (
+        worker_id, game_index, replays, 
+        immediate_reward, reward, critic_values, advantage
+    ) -> None
+    """
 
 
 @dataclass
@@ -58,3 +65,9 @@ class PerformanceParams:
     session_config: object  # tf.ConfigProto (we just don't import tf here)
     n_workers: int = None  # if None, then set automatically
 
+
+@dataclass
+class ModelConfig:
+    model: AgentModelHParams
+    training: TrainingParams
+    maze_size: int

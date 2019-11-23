@@ -1,20 +1,15 @@
 import logging
 import argparse
-import dataclasses
+import threading
 import multiprocessing
 import os
 import dacite
 import yaml
+import tqdm
+import functools
 from coopland.game_lib import Direction
 from coopland.models.a3c.training import run_training
 from coopland.models.a3c import config_lib
-
-
-@dataclasses.dataclass
-class ModelConfig:
-    model: config_lib.AgentModelHParams
-    training: config_lib.TrainingParams
-    maze_size: int
 
 
 def main():
@@ -31,7 +26,7 @@ def main():
 
     with open(os.path.join(model_dir, "config.yml")) as f:
         cfg = yaml.safe_load(f)
-    cfg = dacite.from_dict(ModelConfig, cfg)
+    cfg = dacite.from_dict(config_lib.ModelConfig, cfg)
 
     if opts.no_threads:
         perf_cfg = config_lib.PerformanceParams(
@@ -55,6 +50,8 @@ def main():
             session_config=None,
         )
 
+    pb = tqdm.tqdm(total=opts.train_until_n_games)
+
     ctx = config_lib.TrainingContext(
         model=cfg.model,
         problem=config_lib.ProblemParams(
@@ -67,12 +64,13 @@ def main():
             model_dir=model_dir,
             summaries_dir=model_dir,
             do_visualize=True,
-            per_game_callback=per_game_callback,
-            train_until_n_games=opts.train_until_n_games
+            per_game_callback=functools.partial(per_game_callback, progressbar=pb),
+            train_until_n_games=opts.train_until_n_games,
         ),
         performance=perf_cfg,
     )
     run_training(ctx)
+    pb.close()
 
 
 def reward_function(maze, replays, exit_pos):
@@ -103,9 +101,19 @@ def reward_function(maze, replays, exit_pos):
     return rewards
 
 
-def per_game_callback(replays, immediate_rewards, rewards, critic_values, advantages):
+def per_game_callback(
+    worker_id,
+    game_index,
+    replays,
+    immediate_rewards,
+    rewards,
+    critic_values,
+    advantages,
+    progressbar: tqdm.tqdm,
+):
+    del worker_id
     for replay, immediate_reward, reward, critic_value, advantage in zip(
-            replays, immediate_rewards, rewards, critic_values, advantages
+        replays, immediate_rewards, rewards, critic_values, advantages
     ):
         for (move, _, _), r_i, r_d, v, a in zip(
             replay, immediate_reward, reward, critic_value, advantage
@@ -118,6 +126,12 @@ def per_game_callback(replays, immediate_rewards, rewards, critic_values, advant
             move.debug_text += (
                 f" V={v:.2f}\n" f"Ri={r_i:.2f} " f"Rd={r_d:.2f} " f"A={a:.2f}"
             )
+    with _pb_lock:
+        progressbar.n = max(game_index, progressbar.n)
+        progressbar.update(0)
+
+
+_pb_lock = threading.Lock()
 
 
 def get_visible_positions(visibility, position):
