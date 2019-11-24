@@ -1,23 +1,23 @@
 training:
 #  entropy_strength: 0.0003
-  sync_each_n_games: 1
-  learning_rate: 0.001
-  actor_loss_weight: 1.0
-  critic_loss_weight: 0.25
+  sync_each_n_games: 20
+  learning_rate: 0.01
+  actor_loss_weight: 0.1
+  critic_loss_weight: 1.0
   use_data_augmentation: false
-  logit_regularization_strength: 0.0003
+  logit_regularization_strength: 0.01
 #  actor_label_smoothing: 0.01
 model:
   rnn_units: [50, 50]
   max_agents: 3
   use_visible_agents: true
-  use_communication: false
+  use_communication: true
   comm_units: []
 
 maze_size: 5
 
 reward:
-  discount_rate: 0.9
+  discount_rate: 0.95
   step_reward: 0.5
-  exit_reward: 2.0
+  exit_reward: 1.0
   exit_reward_diff_decay: 0.8

@@ -112,7 +112,7 @@ class AgentModel:
                 *critic_head.trainable_variables,
             ]
         )
-        return AgentInstance(rnn, actor_head, critic_head, saver)
+        return AgentInstance(self.hparams, rnn, actor_head, critic_head, saver)
 
     def create_agent_fn(
         self, agent_instance: "AgentInstance", session, greed_choice_prob=None
@@ -131,19 +131,24 @@ class AgentModel:
             if self.hparams.use_communication:
                 rnn_cell: RNNCellWithStateCommunication = agent_instance.rnn.cell
                 visible_other_agents = observation[3]
-                other_agent_states = []
-                for ag_id, _, _ in visible_other_agents:
+                other_agent_ids = [ag_id for ag_id, _, _ in visible_other_agents]
+                comm_states = []
+                ag_indices = []
+                for ag_id in other_agent_ids:
                     other_prev_state = states.get((ag_id, t - 1), [])
                     if other_prev_state:
                         state_to_add = rnn_cell.get_comm_state(other_prev_state)
                     else:
                         state_to_add = np.zeros([1, rnn_cell.comm_state_size])
-                    other_agent_states.append(state_to_add)
-                if other_agent_states:
-                    other_agent_states = np.concatenate(other_agent_states, axis=0)
+                    comm_states.append(state_to_add)
+                    ag_indices.append(len(ag_indices))
+                if comm_states:
+                    comm_states = np.concatenate(comm_states, axis=0)
                 else:
-                    other_agent_states = np.zeros([1, rnn_cell.comm_state_size])
-                feed[others_state_ph] = other_agent_states
+                    comm_states = np.zeros([1, rnn_cell.comm_state_size])
+                    ag_indices = [-1]
+                feed[comm_states_ph] = comm_states
+                feed[present_indices] = [[ag_indices]]
 
             output_data, new_states = session.run(
                 ((actor_probabilities_t, critic_t), new_states_t), feed
@@ -164,14 +169,14 @@ class AgentModel:
         input_ph = tf.compat.v1.placeholder(tf.float32, [1, None, self.input_data_size])
         if self.hparams.use_communication:
             assert isinstance(agent_instance.rnn.cell, RNNCellWithStateCommunication)
-            others_state_ph = tf.compat.v1.placeholder(
+            comm_states_ph = tf.compat.v1.placeholder(
                 tf.float32, [None, agent_instance.rnn.cell.comm_state_size]
             )
-            others_indices = tf.reshape(
-                tf.range(tf.shape(others_state_ph)[0]), [1, 1, -1]
+            present_indices = tf.compat.v1.placeholder(
+                tf.int32, [1, 1, None]
             )
         else:
-            others_state_ph = others_indices = None
+            comm_states_ph = present_indices = None
         [
             actor_logits_t,
             actor_probabilities_t,
@@ -180,8 +185,8 @@ class AgentModel:
             prev_states_phs,
         ] = agent_instance.call(
             input_ph,
-            const_others_state_tensor=others_state_ph,
-            others_indices=others_indices,
+            const_comm_states_tensor=comm_states_ph,
+            present_indices=present_indices,
         )
         del actor_logits_t
 
@@ -190,6 +195,7 @@ class AgentModel:
 
 @dataclasses.dataclass
 class AgentInstance:
+    model_hparams: config_lib.AgentModelHParams
     rnn: "tf.keras.layers.RNN"
     actor_head: "tf.keras.layers.Layer"
     critic_head: "tf.keras.layers.Layer"
@@ -200,68 +206,19 @@ class AgentInstance:
         input_tensor,
         sequence_lengths_tensor=None,
         input_mask=None,
-        const_others_state_tensor=None,
-        others_indices=None,
+        const_comm_states_tensor=None,
+        present_indices: "[N_batch_agents time max_other_agents]" = None,
     ):
         if input_mask is None:
             if sequence_lengths_tensor is not None:
                 input_mask = build_input_mask(sequence_lengths_tensor)
 
-        use_communication = isinstance(self.rnn.cell, RNNCellWithStateCommunication)
-        if use_communication:
-            self.rnn.cell.const_others_state_tensor = const_others_state_tensor
-
-            # shape of `others_indices` = (n_agents, time, n_others)
-            # shape of `input_tensor` = (n_agents, time, state_size)
-            # insert pseudo-steps for doing the communication
-            # and then remove those steps when no communication or real step is done
-            shp = tf_utils.get_shape_static_or_dynamic(others_indices)
-            n_agents, n_timesteps, n_others = shp
-
-            def insert_pseudo_steps(tensor, time_axis):
-                ax = time_axis
-                orig_shape = tf_utils.get_shape_static_or_dynamic(tensor)
-                rank = len(orig_shape)
-                tensor = tf.transpose(tensor, (*range(ax), *range(ax+1, rank), ax))
-                tensor = tf.expand_dims(tensor, axis=-1)
-                tensor = tf.pad(
-                    tensor,
-                    [(0, 0)] * rank + [(n_others - 1, 0)],
-                )
-                tensor = tf.reshape(
-                    tensor, orig_shape[:ax] + orig_shape[ax+1:] + [-1]
-                )
-                tensor = tf.transpose(tensor, (*range(ax), rank-1, *range(ax, rank-1)))
-                return tensor
-
-            input_tensor = insert_pseudo_steps(input_tensor, 1)
-            real_step_flags = insert_pseudo_steps(tf.ones([n_timesteps], bool), 0)
-            others_indices_inlined = tf.reshape(others_indices, [n_agents, -1])
-            if input_mask is not None:
-                input_mask = tf.tile(input_mask, [1, n_others, 1])
-
-            has_comm_mask = tf.reduce_any(tf.not_equal(others_indices_inlined, -1), 0)
-            keep_mask = tf.logical_or(has_comm_mask, real_step_flags)
-
-            input_tensor = tf.boolean_mask(input_tensor, keep_mask, axis=1)
-            real_step_flags = tf.boolean_mask(real_step_flags, keep_mask, axis=0)
-            others_indices_inlined = tf.boolean_mask(
-                others_indices_inlined, keep_mask, axis=1
-            )
-            if input_mask is not None:
-                input_mask = tf.boolean_mask(input_mask, keep_mask, axis=1)
-
-            real_step_flags = tf.reshape(real_step_flags, [1, -1, 1])
-            others_indices_inlined = tf.expand_dims(others_indices_inlined, 2)
-            input_tensor = input_tensor, others_indices_inlined, real_step_flags
-        else:
-            real_step_flags = None
+        if self.model_hparams.use_communication:
+            self.rnn.cell.const_comm_states_tensor = const_comm_states_tensor
+            input_tensor = input_tensor, present_indices
         features, states_after, states_before_phs = _call_rnn(
             self.rnn, input_tensor, input_mask
         )
-        if use_communication:
-            self.rnn.cell.const_others_state_tensor = None
-            features = tf.boolean_mask(features, real_step_flags[0, :, 0], axis=1)
         actor_logits = self.actor_head(features)
         critic_value = self.critic_head(features)[:, :, 0]
         actor_probabilities = tf.nn.softmax(actor_logits, axis=-1)
@@ -350,33 +307,44 @@ class RNNCellWithStateCommunication(tf.keras.layers.Layer):
     def __init__(self, cell, comm_net_units, application_path):
         super(RNNCellWithStateCommunication, self).__init__()
         self.cell: tf.keras.layers.Layer = cell
+        self._version = 2
 
         self._application_path = tuple(application_path)
         self._flat_idx = list(nest.yield_flat_paths(self.cell.state_size)).index(
             self._application_path
         )
         self.comm_state_size = _getpath(self.cell.state_size, application_path)
-        self._zero_comm_state_for_mask = tf.zeros([self.comm_state_size])
+        # self._zero_comm_state_for_mask = tf.zeros([self.comm_state_size])
         assert isinstance(self.comm_state_size, int)
         self._comm_net_units = [*comm_net_units, self.comm_state_size]
-        self._comm_net = [
-            tf.keras.layers.Dense(
-                units, activation=tf.nn.leaky_relu, kernel_initializer="zeros"
+        if self._version == 1:
+            self._comm_net = [
+                tf.keras.layers.Dense(
+                    units, activation=tf.nn.leaky_relu, kernel_initializer="zeros"
+                )
+                for units in self._comm_net_units
+            ]
+        else:
+            self._comm_net = tf.keras.layers.RNN(
+                tf.keras.layers.StackedRNNCells(
+                    [tf.keras.layers.LSTMCell(units) for units in self._comm_net_units]
+                )
             )
-            for units in self._comm_net_units
-        ]
 
-        self.const_others_state_tensor = None
+        self.const_comm_states_tensor = None
 
     def get_comm_state(self, states):
         return states[self._flat_idx]
 
     def build(self, input_shape):
         self.cell.build(input_shape)
-        comm_input_units = 2 * self.comm_state_size
-        for layer, units in zip(self._comm_net, self._comm_net_units):
-            layer.build(comm_input_units)
-            comm_input_units = units
+        comm_input_units = self.comm_state_size
+        if self._version == 1:
+            for layer, units in zip(self._comm_net, self._comm_net_units):
+                layer.build(comm_input_units)
+                comm_input_units = units
+        else:
+            self._comm_net.build((None, None, 2 * comm_input_units))
         self.built = True
 
     @property
@@ -385,31 +353,55 @@ class RNNCellWithStateCommunication(tf.keras.layers.Layer):
 
     def call(self, inputs, states=None, constants=None, **kwargs):
         assert states is not None
-        inputs, visible_states_indices, real_step = inputs
-        visible_states_indices = tf.squeeze(visible_states_indices, axis=1)
-        real_step = tf.reshape(real_step, ())
-        others_state_tensor = self.const_others_state_tensor
-        if others_state_tensor is None:
-            others_state_tensor = _getpath(states, self._application_path)
+        inputs, present_indices = inputs
+        n_agents_in_batch, n_other_agents = tf_utils.get_shape_static_or_dynamic(
+            present_indices
+        )
         init_comm_states = _getpath(states, self._application_path)
 
-        others_state_tensor_with_pad = tf.pad(others_state_tensor, [[1, 0], [0, 0]])
-
-        comm_states = tf.concat(
-            [
-                init_comm_states,
-                tf.gather(others_state_tensor_with_pad, visible_states_indices + 1),
-            ],
-            axis=-1,
+        comm_states = (
+            init_comm_states
+            if self.const_comm_states_tensor is None
+            else self.const_comm_states_tensor
         )
-        for layer in self._comm_net:
-            comm_states = layer(comm_states)
+        comm_states_pad = tf.pad(comm_states, [(1, 0), (0, 0)])
+        comm_states_matrix = tf.gather(comm_states_pad, present_indices+1)
+        presence_mask = tf.greater_equal(present_indices, 0)
 
-        final_comm_states = tf.where(
-            tf.greater_equal(visible_states_indices, 0),
-            init_comm_states + comm_states,
-            init_comm_states,
-        )
+        if self._version == 1:
+            for layer in self._comm_net:
+                comm_states = layer(comm_states)
+
+            others_tells_weight = -1
+            # comm_states_matrix = tf.tile(
+            #     tf.expand_dims(comm_states, 0), [n_agents_in_batch, 1, 1]
+            # )
+            comm_weights = tf.cast(presence_mask, tf.float32)
+            if others_tells_weight > 0:
+                comm_weights *= others_tells_weight
+                comm_weights *= 1 - tf.eye(
+                    n_agents_in_batch
+                )  # * (1.0 - others_tells_weight)
+            comm_weights = tf.expand_dims(comm_weights, 2)
+            comm_result = tf.reduce_sum(comm_weights * comm_states_matrix, axis=1)
+
+            final_comm_states = init_comm_states + comm_result
+        else:
+            # comm_states_matrix = tf.tile(
+            #     tf.expand_dims(comm_states, 0), [n_agents_in_batch, 1, 1]
+            # )
+            comm_states_matrix = tf.concat(
+                [
+                    comm_states_matrix,
+                    tf.tile(
+                        tf.expand_dims(init_comm_states, 1), [1, n_other_agents, 1]
+                    ),
+                ],
+                axis=2,
+            )
+            final_comm_states = self._comm_net.call(
+                inputs=comm_states_matrix, mask=presence_mask
+            )
 
         paths = list(nest.yield_flat_paths(states))
         states_flat = nest.flatten(states)
@@ -419,19 +411,18 @@ class RNNCellWithStateCommunication(tf.keras.layers.Layer):
         outputs, new_states = self.cell.call(
             inputs, states_after_comm, constants, **kwargs
         )
-        new_states = nest.map_structure(
-            lambda new_st, st: tf.where(real_step, new_st, st),
-            new_states, states_after_comm
-        )
         return outputs, new_states
 
     @property
     def trainable_weights(self):
         if self.trainable:
-            return [
-                *self.cell.trainable_weights,
-                *(v for layer in self._comm_net for v in layer.trainable_weights),
-            ]
+            if self._version == 1:
+                return [
+                    *self.cell.trainable_weights,
+                    *(v for layer in self._comm_net for v in layer.trainable_weights),
+                ]
+            else:
+                return [*self.cell.trainable_weights, *self._comm_net.trainable_weights]
         else:
             return []
 

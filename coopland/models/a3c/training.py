@@ -52,7 +52,7 @@ class A3CWorker:
         self.reward_ph = tf.compat.v1.placeholder(tf.float32, [batch_dim, None])
         self.advantage_ph = tf.compat.v1.placeholder(tf.float32, [batch_dim, None])
         self.episode_len_ph = tf.compat.v1.placeholder(tf.int32, [batch_dim])
-        self.visible_others_ph = tf.compat.v1.placeholder(
+        self.present_indices_ph = tf.compat.v1.placeholder(
             tf.int32, [batch_dim, None, None]
         )
         [
@@ -64,7 +64,7 @@ class A3CWorker:
         ] = self.instance.call(
             self.inputs_ph,
             self.episode_len_ph,
-            others_indices=self.visible_others_ph
+            present_indices=self.present_indices_ph
             if self.model.hparams.use_communication
             else None,
         )
@@ -118,7 +118,7 @@ class A3CWorker:
         )
 
         gradients = tf.gradients(total_loss, self.instance.get_variables())
-        gradients = [tf.clip_by_norm(g, +5) for g in gradients]
+        gradients, gradients_norm = tf.clip_by_global_norm(gradients, 1)
         self.push_op = optimizer.apply_gradients(
             list(zip(gradients, global_instance.get_variables()))
         )
@@ -140,13 +140,14 @@ class A3CWorker:
                 ),
                 _scalar(
                     "Performance/Communications",
-                    tf.reduce_sum(tf.cast(self.visible_others_ph >= 0, tf.float32)) / 2,
+                    tf.reduce_sum(tf.cast(self.present_indices_ph >= 0, tf.float32)) / 2,
                 ),
                 _scalar("Train/Entropy", entropy),
                 _scalar("Train/TotalLoss", total_loss),
                 _scalar("Train/ActorLoss", actor_loss),
                 _hist("Train/ActorLoss_hist", actor_loss_vector),
                 _scalar("Train/CriticLoss", critic_loss),
+                _scalar("Train/GradientsNorm", gradients_norm),
                 _hist("Train/CriticLoss_hist", critic_loss_vector),
                 _scalar("Train/ActorFullLoss", actor_full_loss),
                 *[
@@ -188,56 +189,56 @@ class A3CWorker:
         advantages = []
         inputs_batch = []
         actions_batch = []
-        visible_others_batch = []
+        present_indices_batch = []
 
         def padseq(x, value=0.0, where="post"):
             return tf.keras.preprocessing.sequence.pad_sequences(
                 x, dtype=x[0].dtype, padding=where, value=value
             )
 
-        for replay, reward in zip(replays, rewards):
+        for agent_id, (replay, reward) in enumerate(zip(replays, rewards)):
             critic_value = np.array([move.critic_value for move, _, _ in replay])
             advantage = reward - critic_value
             input_vectors, action_ids = data_utils.get_training_batch(replay)
-            visible_others = padseq(
-                [
-                    np.array([ag_id for ag_id, _, _ in move.observation[3]] or [-1])
-                    for move, _, _ in replay
-                ],
-                value=-1,
-                where="pre",
-            )
+            present_indices = []
+            for t, (move, _, _) in enumerate(replay):
+                present_indices.append([ag_id for ag_id, _, _ in move.observation[3]])
 
             critic_values.append(critic_value)
             advantages.append(advantage)
             inputs_batch.append(input_vectors[0])
             actions_batch.append(action_ids[0])
-            visible_others_batch.append(visible_others)
-        max_t, max_vo = np.max([vo.shape for vo in visible_others_batch], axis=0)
-        visible_others_batch = np.array(
-            [
-                np.pad(
-                    vo,
-                    [(0, max_t - vo.shape[0]), (max_vo - vo.shape[1], 0)],
-                    mode="constant",
-                    constant_values=-1,
-                )
-                for vo in visible_others_batch
-            ]
+            present_indices_batch.append(present_indices)
+        max_others = max(
+            max(map(len, present_indices)) for present_indices in present_indices_batch
         )
+        if max_others == 0:
+            max_others = 1
+        present_indices_batch = [
+            tf.keras.preprocessing.sequence.pad_sequences(
+                present_indices, dtype=int, padding="post", value=-1, maxlen=max_others
+            )
+            for present_indices in present_indices_batch
+        ]
+        present_indices_batch = padseq(present_indices_batch, value=-1)
+        # if present_indices_batch.size == 0:
+        #     shp = [d or 1 for d in present_indices_batch.shape]
+        #     present_indices_batch = - np.ones(shp, dtype=int)
 
         op = self.push_op if summary_writer is None else self.push_op_and_summaries
 
-        results = self.session.run(
-            op,
-            {
+        feed = {
                 self.reward_ph: padseq(rewards),
                 self.advantage_ph: padseq(advantages),
                 self.actions_ph: padseq(actions_batch),
                 self.inputs_ph: padseq(inputs_batch),
-                self.visible_others_ph: visible_others_batch,
+                self.present_indices_ph: present_indices_batch,
                 self.episode_len_ph: [len(replay) for replay in replays],
-            },
+            }
+        # breakpoint()
+        results = self.session.run(
+            op,
+            feed,
         )
 
         if summary_writer is not None:
