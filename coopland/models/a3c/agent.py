@@ -6,7 +6,6 @@ from tensorflow.python.util import nest
 from coopland.maze_lib import Direction
 from coopland.game_lib import Observation
 from coopland.models.a3c import config_lib
-from coopland import tf_utils
 
 
 class AgentModel:
@@ -88,9 +87,8 @@ class AgentModel:
             [tf.keras.layers.LSTMCell(units) for units in self.hparams.rnn_units]
         )
         if self.hparams.use_communication:
-            cell = RNNCellWithStateCommunication(
-                cell, self.hparams.comm_units, (len(self.hparams.rnn_units) - 1, 0)
-            )
+            comm_net = CommCell(self.hparams.comm_units, self.hparams.rnn_units[-1])
+            cell = CommCellWrapper(cell, comm_net)
         rnn = tf.keras.layers.RNN(
             cell, return_state=True, return_sequences=True, name=name_prefix + "RNN"
         )
@@ -102,8 +100,8 @@ class AgentModel:
         )
 
         rnn.build((None, None, self.input_data_size))
-        actor_head.build((None, None, self.hparams.rnn_units[-1]))
-        critic_head.build((None, None, self.hparams.rnn_units[-1]))
+        actor_head.build((None, None, rnn.cell.output_size))
+        critic_head.build((None, None, rnn.cell.output_size))
 
         saver = tf.train.Saver(
             [
@@ -118,41 +116,41 @@ class AgentModel:
         self, agent_instance: "AgentInstance", session, greed_choice_prob=None
     ):
         states = {}
+        signals = {}
         times = {}
 
         def agent_fn(*observation):
             agent_id = observation[0]
             t = times.get(agent_id, 0) + 1
             input_data, metadata = self.encode_observation(*observation)
+            _run_tensors = (actor_probabilities_t, critic_t), new_states_t
 
             prev_states = states.get((agent_id, t - 1), [])
             feed = {input_ph: [input_data]}
             feed.update(zip(prev_states_phs, prev_states))
             if self.hparams.use_communication:
-                rnn_cell: RNNCellWithStateCommunication = agent_instance.rnn.cell
                 visible_other_agents = observation[3]
                 other_agent_ids = [ag_id for ag_id, _, _ in visible_other_agents]
-                comm_states = []
-                ag_indices = []
+                others_signals = []
                 for ag_id in other_agent_ids:
-                    other_prev_state = states.get((ag_id, t - 1), [])
-                    if other_prev_state:
-                        state_to_add = rnn_cell.get_comm_state(other_prev_state)
-                    else:
-                        state_to_add = np.zeros([1, rnn_cell.comm_state_size])
-                    comm_states.append(state_to_add)
-                    ag_indices.append(len(ag_indices))
-                if comm_states:
-                    comm_states = np.concatenate(comm_states, axis=0)
+                    others_signal = signals.get((ag_id, t - 1), None)
+                    if others_signal is None:
+                        others_signal = np.zeros([1, *signals_shape])
+                    others_signals.append(others_signal)
+                if others_signals:
+                    others_signals = np.concatenate(others_signals, axis=0)
                 else:
-                    comm_states = np.zeros([1, rnn_cell.comm_state_size])
-                    ag_indices = [-1]
-                feed[comm_states_ph] = comm_states
-                feed[present_indices] = [[ag_indices]]
+                    others_signals = np.zeros([0, *signals_shape])
+                feed[others_signals_ph] = others_signals
+                feed[present_indices] = [[np.arange(others_signals.shape[0])]]
+                _run_tensors = _run_tensors, out_signal_t
 
-            output_data, new_states = session.run(
-                ((actor_probabilities_t, critic_t), new_states_t), feed
-            )
+            _out_values = session.run(_run_tensors, feed)
+            if self.hparams.use_communication:
+                _out_values, out_signal = _out_values
+                signals[agent_id, t] = out_signal[:, 0]
+                signals.pop((agent_id, t - 2), None)
+            output_data, new_states = _out_values
             states[agent_id, t] = new_states
             times[agent_id] = t
             states.pop((agent_id, t - 2), None)
@@ -162,30 +160,31 @@ class AgentModel:
         def init_before_game():
             states.clear()
             times.clear()
+            signals.clear()
 
         agent_fn.init_before_game = init_before_game
         agent_fn.name = "RNN"
 
         input_ph = tf.compat.v1.placeholder(tf.float32, [1, None, self.input_data_size])
         if self.hparams.use_communication:
-            assert isinstance(agent_instance.rnn.cell, RNNCellWithStateCommunication)
-            comm_states_ph = tf.compat.v1.placeholder(
-                tf.float32, [None, agent_instance.rnn.cell.comm_state_size]
+            assert isinstance(agent_instance.rnn.cell, CommCellWrapper)
+            others_signals_ph = (
+                agent_instance.rnn.cell.comm_net.get_placeholder_for_others_signals()
             )
-            present_indices = tf.compat.v1.placeholder(
-                tf.int32, [1, 1, None]
-            )
+            signals_shape = others_signals_ph.get_shape().as_list()[1:]
+            present_indices = tf.compat.v1.placeholder(tf.int32, [1, 1, None])
         else:
-            comm_states_ph = present_indices = None
+            others_signals_ph = present_indices = None
         [
             actor_logits_t,
             actor_probabilities_t,
             critic_t,
             new_states_t,
             prev_states_phs,
+            out_signal_t,
         ] = agent_instance.call(
             input_ph,
-            const_comm_states_tensor=comm_states_ph,
+            const_others_signals_tensor=others_signals_ph,
             present_indices=present_indices,
         )
         del actor_logits_t
@@ -206,7 +205,7 @@ class AgentInstance:
         input_tensor,
         sequence_lengths_tensor=None,
         input_mask=None,
-        const_comm_states_tensor=None,
+        const_others_signals_tensor=None,
         present_indices: "[N_batch_agents time max_other_agents]" = None,
     ):
         if input_mask is None:
@@ -214,13 +213,14 @@ class AgentInstance:
                 input_mask = build_input_mask(sequence_lengths_tensor)
 
         if self.model_hparams.use_communication:
-            self.rnn.cell.const_comm_states_tensor = const_comm_states_tensor
+            assert isinstance(self.rnn.cell, CommCellWrapper)
+            self.rnn.cell.const_others_signals = const_others_signals_tensor
             input_tensor = input_tensor, present_indices
-        features, states_after, states_before_phs = _call_rnn(
+        signals, states_after, states_before_phs = _call_rnn(
             self.rnn, input_tensor, input_mask
         )
-        actor_logits = self.actor_head(features)
-        critic_value = self.critic_head(features)[:, :, 0]
+        actor_logits = self.actor_head(signals)
+        critic_value = self.critic_head(signals)[:, :, 0]
         actor_probabilities = tf.nn.softmax(actor_logits, axis=-1)
 
         return (
@@ -229,6 +229,7 @@ class AgentInstance:
             critic_value,
             states_after,
             states_before_phs,
+            signals,
         )
 
     def get_variables(self):
@@ -303,131 +304,121 @@ def build_input_mask(sequence_lengths_tensor):
     return mask
 
 
-class RNNCellWithStateCommunication(tf.keras.layers.Layer):
-    def __init__(self, cell, comm_net_units, application_path):
-        super(RNNCellWithStateCommunication, self).__init__()
-        self.cell: tf.keras.layers.Layer = cell
-        self._version = 2
+class CommCellWrapper(tf.keras.layers.Layer):
+    def __init__(self, rnn_cell, comm_cell):
+        super(CommCellWrapper, self).__init__()
+        self.rnn_cell: tf.keras.layers.StackedRNNCells = rnn_cell
+        self.comm_net: CommCell = comm_cell
+        self.const_others_signals = None
 
-        self._application_path = tuple(application_path)
-        self._flat_idx = list(nest.yield_flat_paths(self.cell.state_size)).index(
-            self._application_path
+    def call(self, inputs, states=None, **kwargs):
+        assert states is not None
+        inputs, present_indices = inputs
+        rnn_states, comm_states = nest.pack_sequence_as(self._state_structure, states)
+
+        features, rnn_states_after = self.rnn_cell.call(inputs, rnn_states)
+        comm_signals, comm_state_after = self.comm_net.call(
+            features=features,
+            comm_states=comm_states,
+            present_indices=present_indices,
+            others_signals=self.const_others_signals,
         )
-        self.comm_state_size = _getpath(self.cell.state_size, application_path)
-        # self._zero_comm_state_for_mask = tf.zeros([self.comm_state_size])
-        assert isinstance(self.comm_state_size, int)
-        self._comm_net_units = [*comm_net_units, self.comm_state_size]
-        if self._version == 1:
-            self._comm_net = [
-                tf.keras.layers.Dense(
-                    units, activation=tf.nn.leaky_relu, kernel_initializer="zeros"
-                )
-                for units in self._comm_net_units
-            ]
-        else:
-            self._comm_net = tf.keras.layers.RNN(
-                tf.keras.layers.StackedRNNCells(
-                    [tf.keras.layers.LSTMCell(units) for units in self._comm_net_units]
-                )
-            )
-
-        self.const_comm_states_tensor = None
-
-    def get_comm_state(self, states):
-        return states[self._flat_idx]
+        states_after = rnn_states_after, comm_state_after
+        return comm_signals, tuple(nest.flatten(states_after))
 
     def build(self, input_shape):
-        self.cell.build(input_shape)
-        comm_input_units = self.comm_state_size
-        if self._version == 1:
-            for layer, units in zip(self._comm_net, self._comm_net_units):
-                layer.build(comm_input_units)
-                comm_input_units = units
-        else:
-            self._comm_net.build((None, None, 2 * comm_input_units))
+        self.rnn_cell.build(input_shape)
+        self.comm_net.build((input_shape[0], self.rnn_cell.output_size))
         self.built = True
 
     @property
+    def output_size(self):
+        return self.comm_net.output_size
+
+    @property
     def state_size(self):
-        return self.cell.state_size
+        return tuple(nest.flatten(self._state_structure))
 
-    def call(self, inputs, states=None, constants=None, **kwargs):
-        assert states is not None
-        inputs, present_indices = inputs
-        n_agents_in_batch, n_other_agents = tf_utils.get_shape_static_or_dynamic(
-            present_indices
-        )
-        init_comm_states = _getpath(states, self._application_path)
-
-        comm_states = (
-            init_comm_states
-            if self.const_comm_states_tensor is None
-            else self.const_comm_states_tensor
-        )
-        comm_states_pad = tf.pad(comm_states, [(1, 0), (0, 0)])
-        comm_states_matrix = tf.gather(comm_states_pad, present_indices+1)
-        presence_mask = tf.greater_equal(present_indices, 0)
-
-        if self._version == 1:
-            for layer in self._comm_net:
-                comm_states = layer(comm_states)
-
-            others_tells_weight = -1
-            # comm_states_matrix = tf.tile(
-            #     tf.expand_dims(comm_states, 0), [n_agents_in_batch, 1, 1]
-            # )
-            comm_weights = tf.cast(presence_mask, tf.float32)
-            if others_tells_weight > 0:
-                comm_weights *= others_tells_weight
-                comm_weights *= 1 - tf.eye(
-                    n_agents_in_batch
-                )  # * (1.0 - others_tells_weight)
-            comm_weights = tf.expand_dims(comm_weights, 2)
-            comm_result = tf.reduce_sum(comm_weights * comm_states_matrix, axis=1)
-
-            final_comm_states = init_comm_states + comm_result
-        else:
-            # comm_states_matrix = tf.tile(
-            #     tf.expand_dims(comm_states, 0), [n_agents_in_batch, 1, 1]
-            # )
-            comm_states_matrix = tf.concat(
-                [
-                    comm_states_matrix,
-                    tf.tile(
-                        tf.expand_dims(init_comm_states, 1), [1, n_other_agents, 1]
-                    ),
-                ],
-                axis=2,
-            )
-            final_comm_states = self._comm_net.call(
-                inputs=comm_states_matrix, mask=presence_mask
-            )
-
-        paths = list(nest.yield_flat_paths(states))
-        states_flat = nest.flatten(states)
-        states_flat[paths.index(self._application_path)] = final_comm_states
-        states_after_comm = nest.pack_sequence_as(states, states_flat)
-
-        outputs, new_states = self.cell.call(
-            inputs, states_after_comm, constants, **kwargs
-        )
-        return outputs, new_states
+    @property
+    def _state_structure(self):
+        return self.rnn_cell.state_size, self.comm_net.state_size
 
     @property
     def trainable_weights(self):
-        if self.trainable:
-            if self._version == 1:
-                return [
-                    *self.cell.trainable_weights,
-                    *(v for layer in self._comm_net for v in layer.trainable_weights),
-                ]
-            else:
-                return [*self.cell.trainable_weights, *self._comm_net.trainable_weights]
-        else:
-            return []
+        return [*self.rnn_cell.trainable_weights, *self.comm_net.trainable_weights]
 
 
-def _getpath(obj, path):
-    for item in path:
-        obj = obj[item]
-    return obj
+class CommCell(tf.keras.layers.Layer):
+    def __init__(self, units, features_size):
+        super(CommCell, self).__init__()
+        self._units = units
+        self._features_size = features_size
+        self._out_dim = self._units[-1]
+        self._comm_rnn = tf.keras.layers.RNN(
+            tf.keras.layers.StackedRNNCells(
+                [tf.keras.layers.LSTMCell(units) for units in self._units]
+            ),
+            return_state=True,
+        )
+
+    def call(
+        self,
+        features,
+        comm_states=None,
+        present_indices=None,
+        others_signals=None,
+        **kwargs,
+    ):
+        assert comm_states is not None
+        assert present_indices is not None
+        signals, inner_rnn_states = comm_states
+        assert signals.get_shape().as_list()[1] == self._out_dim
+
+        others_signals = others_signals if others_signals is not None else signals
+        others_signals_pad = tf.pad(others_signals, [(1, 0), (0, 0)])
+        others_signals_seqs = tf.gather(others_signals_pad, present_indices + 1)
+        signals_mask = tf.greater_equal(present_indices, 0)
+
+        all_signals_seq = tf.concat(
+            [tf.expand_dims(signals, 1), others_signals_seqs], 1
+        )
+        signals_mask = tf.pad(signals_mask, [(0, 0), (1, 0)], constant_values=True)
+
+        n_comm_steps = tf.shape(all_signals_seq)[1]
+        inner_rnn_full_input = tf.concat(
+            [
+                all_signals_seq,
+                tf.tile(tf.expand_dims(features, 1), [1, n_comm_steps, 1]),
+            ],
+            axis=2,
+        )
+
+        out_signal, new_inner_rnn_states = self._comm_rnn.call(
+            inner_rnn_full_input,
+            signals_mask,
+            initial_state=inner_rnn_states,
+            constants=(),
+        )
+        return out_signal, (out_signal, new_inner_rnn_states)
+
+    def build(self, input_shape):
+        assert input_shape[1] == self._features_size
+        self._comm_rnn.build(
+            (input_shape[0], None, self._out_dim + input_shape[1])
+        )
+        self.built = True
+
+    def get_placeholder_for_others_signals(self):
+        return tf.compat.v1.placeholder(tf.float32, [None, self._out_dim])
+
+    @property
+    def output_size(self):
+        return self._out_dim
+
+    @property
+    def state_size(self):
+        return self._out_dim, self._comm_rnn.cell.state_size
+
+    @property
+    def trainable_weights(self):
+        return self._comm_rnn.trainable_weights

@@ -61,6 +61,7 @@ class A3CWorker:
             critic_value,
             states_after,
             states_before_phs,
+            signals,
         ] = self.instance.call(
             self.inputs_ph,
             self.episode_len_ph,
@@ -70,6 +71,7 @@ class A3CWorker:
         )
         del states_after
         del states_before_phs
+        del signals
 
         if train_params.actor_label_smoothing is not None:
             smooth = train_params.actor_label_smoothing
@@ -212,8 +214,8 @@ class A3CWorker:
         max_others = max(
             max(map(len, present_indices)) for present_indices in present_indices_batch
         )
-        if max_others == 0:
-            max_others = 1
+        # if max_others == 0:
+        #     max_others = 1
         present_indices_batch = [
             tf.keras.preprocessing.sequence.pad_sequences(
                 present_indices, dtype=int, padding="post", value=-1, maxlen=max_others
