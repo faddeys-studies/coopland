@@ -393,7 +393,7 @@ class CommCell(tf.keras.layers.Layer):
             axis=2,
         )
 
-        out_signal, new_inner_rnn_states = self._comm_rnn.call(
+        out_signal, *new_inner_rnn_states = self._comm_rnn.call(
             inner_rnn_full_input,
             signals_mask,
             initial_state=inner_rnn_states,
