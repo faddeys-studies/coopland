@@ -10,8 +10,8 @@ import functools
 import itertools
 import numpy as np
 from coopland.game_lib import Direction
-from coopland.models.a3c.training import run_training
-from coopland.models.a3c import config_lib
+from coopland.a3c.training import run_training
+from coopland import config_lib
 
 
 def main():
@@ -54,12 +54,14 @@ def main():
 
     pb = tqdm.tqdm(total=opts.train_until_n_games)
 
+    default_n_agents = getattr(cfg.model_hparams, "max_agents", 1)
     ctx = config_lib.TrainingContext(
-        model=cfg.model,
+        model_type=cfg.model_type,
+        model_hparams=cfg.model_hparams,
         problem=config_lib.ProblemParams(
             reward_function=reward_function(cfg.reward),
             maze_size=(cfg.maze_size, cfg.maze_size),
-            n_agents=opts.n_agents or cfg.model.max_agents,
+            n_agents=opts.n_agents or default_n_agents,
         ),
         training=cfg.training,
         infrastructure=config_lib.TrainingInfrastructure(

@@ -10,7 +10,7 @@ def main():
 
     os.makedirs(opts.target_dir, exist_ok=False)
     shutil.copyfile(
-        "coopland/models/a3c/model.yml", os.path.join(opts.target_dir, "config.yml")
+        "coopland/scripts/model.yml", os.path.join(opts.target_dir, "config.yml")
     )
 
 

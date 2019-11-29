@@ -7,12 +7,26 @@ training:
   use_data_augmentation: false
   logit_regularization_strength: 0.01
 #  actor_label_smoothing: 0.01
-model:
+
+model_type: ac_n
+model_hparams:
   rnn_units: [47, 53]
-  max_agents: 3
-  use_visible_agents: true
-  use_communication: true
-  comm_units: [43]
+
+#model_type: ac_v
+#model_hparams:
+#  max_agents: 2
+#  rnn_units: [47, 53]
+
+#model_type: ac_c
+#model_hparams:
+#  max_agents: 2
+#  comm_units: [53]
+#  rnn_units: [47]
+
+#model_type: ac_p
+#model_hparams:
+#  max_agents: 2
+#  rnn_units: [47, 53]
 
 maze_size: 5
 

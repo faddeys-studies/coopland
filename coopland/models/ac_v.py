@@ -5,7 +5,7 @@ import os
 from tensorflow.python.util import nest
 from coopland.maze_lib import Direction
 from coopland.game_lib import Observation
-from coopland.models.a3c import config_lib
+from coopland import config_lib
 
 
 class AgentModel:
@@ -28,6 +28,19 @@ class AgentModel:
             visible_other_agents,
             visible_exit,
         )
+        result = self._encode_basic_observation(visibility, corners, visible_exit)
+
+        if self.hparams.use_visible_agents:
+            result.extend(self._encode_visible_others(agent_id, visible_other_agents))
+
+        vector = np.array(result)
+        assert vector.shape == (self.input_data_size,)
+        return (
+            np.expand_dims(vector, 0),
+            {"input_vector": vector, "full_observation": full_observation},
+        )
+
+    def _encode_basic_observation(self, visibility, corners, visible_exit):
         result = []
         result.extend(visibility)
         result.extend(sum(corners, []))
@@ -37,26 +50,20 @@ class AgentModel:
             exit_vec[self.directions_to_i[exit_dir]] = 1
             exit_vec[-1] = exit_dist
         result.extend(exit_vec)
+        return result
 
-        if self.hparams.use_visible_agents:
-            visible_agents_part = [0, 0, 0, 0] * (self.hparams.max_agents - 1)
-            for ag_id, direction, dist in visible_other_agents:
-                if ag_id >= self.hparams.max_agents:
-                    continue
-                offs = 4 * (ag_id if ag_id < agent_id else ag_id - 1)
-                if dist == 0:
-                    visible_agents_part[offs : offs + 4] = 1, 1, 1, 1
-                else:
-                    i = offs + self.directions_to_i[direction]
-                    visible_agents_part[i] = 1 / dist
-            result.extend(visible_agents_part)
-
-        vector = np.array(result)
-        assert vector.shape == (self.input_data_size,)
-        return (
-            np.expand_dims(vector, 0),
-            {"input_vector": vector, "full_observation": full_observation},
-        )
+    def _encode_visible_others(self, agent_id, visible_other_agents):
+        result = [0, 0, 0, 0] * (self.hparams.max_agents - 1)
+        for ag_id, direction, dist in visible_other_agents:
+            if ag_id >= self.hparams.max_agents:
+                continue
+            offs = 4 * (ag_id if ag_id < agent_id else ag_id - 1)
+            if dist == 0:
+                result[offs: offs + 4] = 1, 1, 1, 1
+            else:
+                i = offs + self.directions_to_i[direction]
+                result[i] = 1 / dist
+        return result
 
     def decode_nn_output(self, outputs, metadata, greed_choice_prob=None):
         probs = outputs[0][0, 0]

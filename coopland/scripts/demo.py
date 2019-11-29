@@ -2,11 +2,10 @@ import argparse
 import os
 import yaml
 import dacite
-import tqdm
-import numpy as np
 import tensorflow as tf
-from coopland.models.a3c import agent, config_lib
-from coopland import game_lib, maze_lib
+from coopland.a3c import agent
+from coopland.visualizer_lib import Visualizer
+from coopland import game_lib, maze_lib, config_lib
 
 
 def main():
@@ -14,14 +13,9 @@ def main():
     cli.add_argument("model_dir")
     cli.add_argument("--size", type=int)
     cli.add_argument("--n-agents", type=int)
-    cli.add_argument("--n-games", type=int, default=10000)
-    cli.add_argument("--max-game-len", type=int, default=100)
-    cli.add_argument("--out")
     opts = cli.parse_args()
 
     model_dir = opts.model_dir
-    if opts.out is None:
-        opts.out = os.path.join(model_dir, "test-results.txt")
 
     with open(os.path.join(model_dir, "config.yml")) as f:
         cfg = yaml.safe_load(f)
@@ -38,19 +32,24 @@ def main():
 
     model_instance.load_variables(session, opts.model_dir)
 
-    results = []
+    visualizer = Visualizer(
+        cell_size_px=100,
+        sec_per_turn=0.5,
+        move_animation_sec=0.4,
+        autoplay=True,
+        autoend=False,
+    )
+
     try:
-        for _ in tqdm.tqdm(range(opts.n_games)):
+        while True:
             maze = maze_lib.generate_random_maze(opts.size, opts.size, 0.1)
             game = game_lib.Game.generate_random(maze, agent_fn, opts.n_agents)
             agent_fn.init_before_game()
-            replays = game.play(opts.max_game_len or maze.height * maze.width * 2)
+            replays = game.play(maze.height * maze.width * 2)
 
-            results.append(list(map(len, replays)))
+            visualizer.run(game, replays)
     except KeyboardInterrupt:
         return
-
-    np.savetxt(opts.out, np.array(results), fmt="%d")
 
 
 if __name__ == "__main__":

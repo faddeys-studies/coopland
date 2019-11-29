@@ -1,6 +1,6 @@
 from coopland.game_lib import Game, Move, Direction
 from coopland.maze_lib import generate_random_maze, flip_maze, rotate_maze_clockwise
-from coopland.models.a3c import data_utils
+from coopland.a3c import data_utils
 import pytest
 import random
 

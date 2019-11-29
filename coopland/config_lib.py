@@ -1,19 +1,40 @@
 from dataclasses import dataclass
-from typing import List, Callable, Tuple, Optional
+from typing import List, Callable, Tuple, Optional, Union
 
 
 @dataclass
-class AgentModelHParams:
+class ModelHParamsNoCoop:
+    rnn_units: List[int]
+
+
+@dataclass
+class ModelHParamsVisOnly:
+    rnn_units: List[int]
+    max_agents: int
+
+
+@dataclass
+class ModelHParamsNestRNN:
     rnn_units: List[int]
     comm_units: Optional[List[int]]
     max_agents: int
-    use_visible_agents: bool
-    use_communication: bool
+
+
+@dataclass
+class ModelHParamsSignalRL:
+    rnn_units: List[int]
+    max_agents: int
+
+
+ModelHParams = Union[
+    ModelHParamsNoCoop, ModelHParamsVisOnly, ModelHParamsNestRNN, ModelHParamsSignalRL
+]
 
 
 @dataclass
 class TrainingContext:
-    model: "AgentModelHParams"
+    model_type: str
+    model_hparams: ModelHParams
     problem: "ProblemParams"
     training: "TrainingParams"
     infrastructure: "TrainingInfrastructure"
@@ -75,7 +96,8 @@ class RewardParams:
 
 @dataclass
 class ModelConfig:
-    model: AgentModelHParams
+    model_type: str
+    model_hparams: ModelHParams
     training: TrainingParams
     maze_size: int
     reward: RewardParams

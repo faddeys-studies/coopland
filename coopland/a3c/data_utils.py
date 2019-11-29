@@ -112,4 +112,9 @@ def get_augmented_training_batch(replay, encode_fn):
 def get_training_batch(replay):
     inputs = np.array([move.input_vector for move, _, _ in replay])
     actions = np.array([move.direction_idx for move, _, _ in replay])
-    return np.expand_dims(inputs, axis=0), np.expand_dims(actions, axis=0)
+    signals = [move.signal for move, _, _ in replay]
+    if signals[0] is not None:
+        signals = np.expand_dims(np.array(signals), axis=0)
+    else:
+        signals = None
+    return np.expand_dims(inputs, axis=0), np.expand_dims(actions, axis=0), signals

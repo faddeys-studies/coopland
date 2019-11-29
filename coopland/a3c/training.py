@@ -6,12 +6,12 @@ import tqdm
 import multiprocessing
 import logging
 from queue import Queue, Full, Empty
-from coopland.models.a3c.agent import AgentModel, AgentInstance
-from coopland.models.a3c import data_utils, config_lib
+from coopland.a3c.agent import AgentModel, AgentInstance
+from coopland.a3c import data_utils
 from coopland.game_lib import Game, Maze
 from coopland.maze_lib import generate_random_maze
 from coopland.visualizer_lib import VisualizerServer
-from coopland import utils
+from coopland import utils, config_lib
 
 
 class A3CWorker:
@@ -55,6 +55,9 @@ class A3CWorker:
         self.present_indices_ph = tf.compat.v1.placeholder(
             tf.int32, [batch_dim, None, None]
         )
+        self.signals_ph = tf.compat.v1.placeholder(
+            tf.float32, [batch_dim, None, self.model.signal_size]
+        )
         [
             actor_logits,
             actor_probs,
@@ -66,11 +69,18 @@ class A3CWorker:
             self.inputs_ph,
             self.episode_len_ph,
             present_indices=self.present_indices_ph
-            if self.model.hparams.use_communication
+            if self.model.consumes_signals
             else None,
         )
         del states_after
         del states_before_phs
+
+        if signals is not None:
+            signals_loss = self.instance.get_loss_for_signal(
+                self.signals_ph, signals, self.advantage_ph
+            )
+        else:
+            signals_loss = None
         del signals
 
         if train_params.actor_label_smoothing is not None:
@@ -118,6 +128,8 @@ class A3CWorker:
             + train_params.critic_loss_weight * critic_loss
             + reg_loss
         )
+        if signals_loss is not None:
+            total_loss += signals_loss
 
         gradients = tf.gradients(total_loss, self.instance.get_variables())
         gradients, gradients_norm = tf.clip_by_global_norm(gradients, 1)
@@ -142,11 +154,17 @@ class A3CWorker:
                 ),
                 _scalar(
                     "Performance/Communications",
-                    tf.reduce_sum(tf.cast(self.present_indices_ph >= 0, tf.float32)) / 2,
+                    tf.reduce_sum(tf.cast(self.present_indices_ph >= 0, tf.float32))
+                    / 2,
                 ),
                 _scalar("Train/Entropy", entropy),
                 _scalar("Train/TotalLoss", total_loss),
                 _scalar("Train/ActorLoss", actor_loss),
+                *(
+                    [_scalar("Train/SignalsLoss", actor_loss)]
+                    if signals_loss is not None
+                    else []
+                ),
                 _hist("Train/ActorLoss_hist", actor_loss_vector),
                 _scalar("Train/CriticLoss", critic_loss),
                 _scalar("Train/GradientsNorm", gradients_norm),
@@ -192,6 +210,7 @@ class A3CWorker:
         inputs_batch = []
         actions_batch = []
         present_indices_batch = []
+        signals_batch = [] if self.model.generates_signals else None
 
         def padseq(x, value=0.0, where="post"):
             return tf.keras.preprocessing.sequence.pad_sequences(
@@ -201,7 +220,7 @@ class A3CWorker:
         for agent_id, (replay, reward) in enumerate(zip(replays, rewards)):
             critic_value = np.array([move.critic_value for move, _, _ in replay])
             advantage = reward - critic_value
-            input_vectors, action_ids = data_utils.get_training_batch(replay)
+            input_vectors, action_ids, signals = data_utils.get_training_batch(replay)
             present_indices = []
             for t, (move, _, _) in enumerate(replay):
                 present_indices.append([ag_id for ag_id, _, _ in move.observation[3]])
@@ -211,11 +230,12 @@ class A3CWorker:
             inputs_batch.append(input_vectors[0])
             actions_batch.append(action_ids[0])
             present_indices_batch.append(present_indices)
+            if signals_batch is not None:
+                assert signals is not None
+                signals_batch.append(signals)
         max_others = max(
             max(map(len, present_indices)) for present_indices in present_indices_batch
         )
-        # if max_others == 0:
-        #     max_others = 1
         present_indices_batch = [
             tf.keras.preprocessing.sequence.pad_sequences(
                 present_indices, dtype=int, padding="post", value=-1, maxlen=max_others
@@ -223,25 +243,20 @@ class A3CWorker:
             for present_indices in present_indices_batch
         ]
         present_indices_batch = padseq(present_indices_batch, value=-1)
-        # if present_indices_batch.size == 0:
-        #     shp = [d or 1 for d in present_indices_batch.shape]
-        #     present_indices_batch = - np.ones(shp, dtype=int)
 
         op = self.push_op if summary_writer is None else self.push_op_and_summaries
 
         feed = {
-                self.reward_ph: padseq(rewards),
-                self.advantage_ph: padseq(advantages),
-                self.actions_ph: padseq(actions_batch),
-                self.inputs_ph: padseq(inputs_batch),
-                self.present_indices_ph: present_indices_batch,
-                self.episode_len_ph: [len(replay) for replay in replays],
-            }
-        # breakpoint()
-        results = self.session.run(
-            op,
-            feed,
-        )
+            self.reward_ph: padseq(rewards),
+            self.advantage_ph: padseq(advantages),
+            self.actions_ph: padseq(actions_batch),
+            self.inputs_ph: padseq(inputs_batch),
+            self.present_indices_ph: present_indices_batch,
+            self.episode_len_ph: [len(replay) for replay in replays],
+        }
+        if signals_batch is not None:
+            feed[self.signals_ph] = padseq(signals_batch)
+        results = self.session.run(op, feed)
 
         if summary_writer is not None:
             results, summaries = results
@@ -260,7 +275,6 @@ class A3CWorker:
             game_index, maze = mazes_queue.get()
             if maze is None:
                 break
-            # log.info(f"W={self.id}: running #{game_index}")
 
             epoch = game_index // self.ctx.training.sync_each_n_games
             if epoch != last_epoch:
@@ -298,6 +312,13 @@ def maze_generator_loop(
         mazes_queue.put((None, None))
 
 
+def get_model(model_type, hparams) -> AgentModel:
+    if model_type == "ac_n":
+        from coopland.models import ac_n
+        return ac_n.AgentModel(hparams)
+    raise ValueError(f"wrong model type: {model_type}")
+
+
 def run_training(train_context: config_lib.TrainingContext):
     ctx = train_context
     perf = train_context.performance
@@ -317,7 +338,7 @@ def run_training(train_context: config_lib.TrainingContext):
     tf.compat.v1.reset_default_graph()
     graph = tf.compat.v1.get_default_graph()
     session = tf.compat.v1.Session(config=perf.session_config)
-    model = AgentModel(ctx.model)
+    model = get_model(ctx.model_type, ctx.model_hparams)
     global_inst = model.build_layers()
     optimizer = tf.compat.v1.train.RMSPropOptimizer(ctx.training.learning_rate)
 
