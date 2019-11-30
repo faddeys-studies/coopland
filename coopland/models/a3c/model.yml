@@ -13,6 +13,7 @@ model:
   use_visible_agents: true
   use_communication: true
   comm_units: [43]
+  comm_type: signal_as_feature
 
 maze_size: 5
 

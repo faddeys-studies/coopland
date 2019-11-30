@@ -5,8 +5,7 @@ import os
 from tensorflow.python.util import nest
 from coopland.maze_lib import Direction
 from coopland.game_lib import Observation
-from coopland.models.a3c import config_lib
-from coopland import tf_utils
+from coopland.models.a3c import config_lib, comm_nets
 
 
 class AgentModel:
@@ -59,7 +58,10 @@ class AgentModel:
             [tf.keras.layers.LSTMCell(units) for units in self.hparams.rnn_units]
         )
         if self.hparams.use_communication:
-            cell = CommCell(cell, self.hparams.comm_units[0])
+            cell = comm_nets.create(self.hparams, cell)
+            features_size = cell.output_size - cell.signal_size
+        else:
+            features_size = cell.output_size
         rnn = tf.keras.layers.RNN(
             cell, return_state=True, return_sequences=True, name=name_prefix + "RNN"
         )
@@ -71,8 +73,8 @@ class AgentModel:
         )
 
         rnn.build((None, None, self.input_data_size))
-        actor_head.build((None, None, rnn.cell.output_size))
-        critic_head.build((None, None, rnn.cell.output_size))
+        actor_head.build((None, None, features_size))
+        critic_head.build((None, None, features_size))
 
         saver = tf.train.Saver(
             [
@@ -185,15 +187,15 @@ class AgentInstance:
         assert present_indices is not None
 
         if self.model_hparams.use_communication:
-            assert isinstance(self.rnn.cell, BaseCommCell)
+            assert isinstance(self.rnn.cell, comm_nets.BaseCommCell)
             input_tensor = input_tensor, present_indices
         features, states_after, states_before_phs = _call_rnn(
             self.rnn, input_tensor, input_mask
         )
         if self.model_hparams.use_communication:
             signal_size = self.rnn.cell.signal_size
-            signals = features[:, :signal_size]
-            features = features[:, signal_size:]
+            signals = features[:, :, :signal_size]
+            features = features[:, :, signal_size or None:]
         else:
             signals = None
         actor_logits = self.actor_head(features)
@@ -322,90 +324,6 @@ def build_input_mask(sequence_lengths_tensor):
     mask = tf.less(step_indices, tf.expand_dims(sequence_lengths_tensor, 1))
     mask = tf.expand_dims(mask, axis=2)
     return mask
-
-
-class BaseCommCell:
-    signal_size = 0
-
-    def get_visible_ids(self, visible_other_agents):
-        raise NotImplementedError
-
-
-class CommCell(BaseCommCell, tf.keras.layers.Layer):
-    def __init__(self, rnn_cell, signal_size):
-        super(CommCell, self).__init__()
-        self.rnn_cell: tf.keras.layers.StackedRNNCells = rnn_cell
-        self.signal_generator = tf.keras.layers.Dense(
-            signal_size, activation=tf.nn.leaky_relu
-        )
-        self.signal_size = signal_size
-
-    def call(self, inputs, states=None, **kwargs):
-        assert states is not None
-        inputs, present_indices = inputs
-        rnn_states, signals = nest.pack_sequence_as(self._state_structure, states)
-
-        assert signals.get_shape().as_list()[1] == self.signal_size
-        assert present_indices.get_shape().as_list()[1] == 4
-
-        signals = signals
-        signals_pad = tf.pad(signals, [(1, 0), (0, 0)])
-        signals_sets = tf.gather(signals_pad, present_indices + 1)
-        signal_features = tf.transpose(signals_sets, [1, 0, 2])
-        assert signal_features.get_shape().as_list() == [
-            signals.get_shape().as_list()[0],
-            4,
-            self.signal_size,
-        ]
-        signal_features = tf.reshape(
-            signal_features,
-            [
-                tf_utils.get_shape_static_or_dynamic(signal_features)[0],
-                4 * self.signal_size,
-            ],
-        )
-
-        full_input = tf.concat([inputs, signal_features], axis=1)
-
-        features, rnn_states_after = self.rnn_cell.call(full_input, rnn_states)
-        new_own_signal = self.signal_generator.call(features)
-        states_after = rnn_states_after, new_own_signal
-        full_output = tf.concat([new_own_signal, features], axis=1)
-        return full_output, tuple(nest.flatten(states_after))
-
-    def get_visible_ids(self, visible_other_agents):
-        present_indices = [-1] * 4
-        present_distances = [None] * 4
-        for ag_id, direction, dist in visible_other_agents:
-            i = self.directions_to_i[direction]
-            if present_distances[i] is None or dist < present_distances[i]:
-                present_indices[i] = ag_id
-        return present_indices
-
-    def build(self, input_shape):
-        input_shape = list(input_shape)
-        self.rnn_cell.build(input_shape[:-1] + [input_shape[-1] + self.signal_size])
-        self.signal_generator.build(input_shape[:-1] + [self.rnn_cell.output_size])
-        self.built = True
-
-    @property
-    def output_size(self):
-        return self.signal_size + self.rnn_cell.output_size
-
-    @property
-    def state_size(self):
-        return tuple(nest.flatten(self._state_structure))
-
-    @property
-    def _state_structure(self):
-        return self.rnn_cell.state_size, self.signal_size
-
-    @property
-    def trainable_weights(self):
-        return [
-            *self.rnn_cell.trainable_weights,
-            *self.signal_generator.trainable_weights,
-        ]
 
 
 _directions = Direction.list_clockwise()

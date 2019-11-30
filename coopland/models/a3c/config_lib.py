@@ -9,6 +9,7 @@ class AgentModelHParams:
     max_agents: int
     use_visible_agents: bool
     use_communication: bool
+    comm_type: str = None
 
 
 @dataclass
