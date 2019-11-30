@@ -65,9 +65,7 @@ class A3CWorker:
         ] = self.instance.call(
             self.inputs_ph,
             self.episode_len_ph,
-            present_indices=self.present_indices_ph
-            if self.model.hparams.use_communication
-            else None,
+            present_indices=self.present_indices_ph,
         )
         del states_after
         del states_before_phs
@@ -142,7 +140,8 @@ class A3CWorker:
                 ),
                 _scalar(
                     "Performance/Communications",
-                    tf.reduce_sum(tf.cast(self.present_indices_ph >= 0, tf.float32)) / 2,
+                    tf.reduce_sum(tf.cast(self.present_indices_ph >= 0, tf.float32))
+                    / 2,
                 ),
                 _scalar("Train/Entropy", entropy),
                 _scalar("Train/TotalLoss", total_loss),
@@ -184,7 +183,7 @@ class A3CWorker:
 
     def work_on_one_game(self, maze: Maze, game_index, summary_writer):
         game = Game.generate_random(maze, self.agent_fn, self.ctx.problem.n_agents)
-        self.agent_fn.init_before_game()
+        self.agent_fn.init_before_game(self.ctx.problem.n_agents)
         replays = game.play(maze.height * maze.width * 3 // 2)
         rewards = self.ctx.problem.reward_function(maze, replays, game.exit_position)
         critic_values = []
@@ -202,9 +201,10 @@ class A3CWorker:
             critic_value = np.array([move.critic_value for move, _, _ in replay])
             advantage = reward - critic_value
             input_vectors, action_ids = data_utils.get_training_batch(replay)
-            present_indices = []
-            for t, (move, _, _) in enumerate(replay):
-                present_indices.append([ag_id for ag_id, _, _ in move.observation[3]])
+            present_indices = [
+                self.instance.get_visible_ids(move.observation[3])
+                for move, _, _ in replay
+            ]
 
             critic_values.append(critic_value)
             advantages.append(advantage)
@@ -214,8 +214,6 @@ class A3CWorker:
         max_others = max(
             max(map(len, present_indices)) for present_indices in present_indices_batch
         )
-        # if max_others == 0:
-        #     max_others = 1
         present_indices_batch = [
             tf.keras.preprocessing.sequence.pad_sequences(
                 present_indices, dtype=int, padding="post", value=-1, maxlen=max_others
@@ -223,25 +221,18 @@ class A3CWorker:
             for present_indices in present_indices_batch
         ]
         present_indices_batch = padseq(present_indices_batch, value=-1)
-        # if present_indices_batch.size == 0:
-        #     shp = [d or 1 for d in present_indices_batch.shape]
-        #     present_indices_batch = - np.ones(shp, dtype=int)
 
         op = self.push_op if summary_writer is None else self.push_op_and_summaries
 
         feed = {
-                self.reward_ph: padseq(rewards),
-                self.advantage_ph: padseq(advantages),
-                self.actions_ph: padseq(actions_batch),
-                self.inputs_ph: padseq(inputs_batch),
-                self.present_indices_ph: present_indices_batch,
-                self.episode_len_ph: [len(replay) for replay in replays],
-            }
-        # breakpoint()
-        results = self.session.run(
-            op,
-            feed,
-        )
+            self.reward_ph: padseq(rewards),
+            self.advantage_ph: padseq(advantages),
+            self.actions_ph: padseq(actions_batch),
+            self.inputs_ph: padseq(inputs_batch),
+            self.present_indices_ph: present_indices_batch,
+            self.episode_len_ph: [len(replay) for replay in replays],
+        }
+        results = self.session.run(op, feed)
 
         if summary_writer is not None:
             results, summaries = results
