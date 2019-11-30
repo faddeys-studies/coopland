@@ -403,9 +403,7 @@ class CommCell(tf.keras.layers.Layer):
 
     def build(self, input_shape):
         assert input_shape[1] == self._features_size
-        self._comm_rnn.build(
-            (input_shape[0], None, self._out_dim + input_shape[1])
-        )
+        self._comm_rnn.build((input_shape[0], None, self._out_dim + input_shape[1]))
         self.built = True
 
     def get_placeholder_for_others_signals(self):

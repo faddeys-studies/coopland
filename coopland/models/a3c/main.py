@@ -99,18 +99,26 @@ def reward_function(params: config_lib.RewardParams):
                 r = params.step_reward * (d_old - d_new)
                 reward.append(r)
             rewards.append(reward)
-        if len(rewards) > 1:
-            average_reward = []
-            for rew_tup in itertools.zip_longest(*rewards):
-                rew_tup = [r for r in rew_tup if r is not None]
-                average_reward.append(sum(rew_tup) / len(rew_tup))
+        if params.average_over_team:
+            if len(rewards) > 1:
+                average_reward = []
+                for rew_tup in itertools.zip_longest(*rewards):
+                    rew_tup = [r for r in rew_tup if r is not None]
+                    average_reward.append(sum(rew_tup) / len(rew_tup))
+            else:
+                average_reward = rewards[0]
+            average_reward = np.array(average_reward)
+            if all(replay[-1][2] == exit_pos for replay in replays):
+                average_reward[-1] += params.exit_reward
+            average_reward = discount(average_reward, params.discount_rate)
+            rewards = [average_reward[: len(replay)] for replay in replays]
         else:
-            average_reward = rewards[0]
-        average_reward = np.array(average_reward)
-        if all(replay[-1][2] == exit_pos for replay in replays):
-            average_reward[-1] += params.exit_reward
-        average_reward = discount(average_reward, params.discount_rate)
-        rewards = [average_reward[:len(replay)] for replay in replays]
+            for reward, replay in zip(rewards, replays):
+                if replay[-1][2] == exit_pos:
+                    reward[-1] += params.exit_reward
+            rewards = [
+                discount(np.array(reward), params.discount_rate) for reward in rewards
+            ]
         return rewards
 
     return compute_reward

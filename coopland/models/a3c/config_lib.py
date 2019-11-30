@@ -71,6 +71,7 @@ class RewardParams:
     exit_reward: float
     exit_reward_diff_decay: float
     discount_rate: float = 0.9
+    average_over_team: bool = True
 
 
 @dataclass
