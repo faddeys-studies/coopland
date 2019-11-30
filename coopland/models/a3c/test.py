@@ -43,7 +43,7 @@ def main():
         for _ in tqdm.tqdm(range(opts.n_games)):
             maze = maze_lib.generate_random_maze(opts.size, opts.size, 0.1)
             game = game_lib.Game.generate_random(maze, agent_fn, opts.n_agents)
-            agent_fn.init_before_game()
+            agent_fn.init_before_game(opts.n_agents)
             replays = game.play(opts.max_game_len or maze.height * maze.width * 2)
 
             results.append(list(map(len, replays)))
