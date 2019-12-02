@@ -108,8 +108,10 @@ def reward_function(params: config_lib.RewardParams):
             else:
                 average_reward = rewards[0]
             average_reward = np.array(average_reward)
-            if all(replay[-1][2] == exit_pos for replay in replays):
+            n_left = sum(replay[-1][2] == exit_pos for replay in replays)
+            if n_left == len(replays):
                 average_reward[-1] += params.exit_reward
+            average_reward[-1] += params.one_agent_exit_reward * n_left
             average_reward = discount(average_reward, params.discount_rate)
             rewards = [average_reward[: len(replay)] for replay in replays]
         else:

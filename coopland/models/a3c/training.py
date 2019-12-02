@@ -63,9 +63,7 @@ class A3CWorker:
             states_before_phs,
             signals,
         ] = self.instance.call(
-            self.inputs_ph,
-            self.episode_len_ph,
-            present_indices=self.present_indices_ph,
+            self.inputs_ph, self.episode_len_ph, present_indices=self.present_indices_ph
         )
         del states_after
         del states_before_phs
@@ -129,56 +127,57 @@ class A3CWorker:
 
         _scalar = tf.compat.v1.summary.scalar
         _hist = tf.compat.v1.summary.histogram
-        self.summary_op = tf.compat.v1.summary.merge(
-            [
-                _scalar("Performance/Reward", tf.reduce_mean(self.reward_ph)),
-                _scalar("Performance/Advantage", tf.reduce_mean(self.advantage_ph)),
-                _scalar("Performance/NSteps", tf.shape(self.actions_ph)[1]),
+        scalars = [
+            _scalar("Performance/Reward", tf.reduce_mean(self.reward_ph)),
+            _scalar("Performance/Advantage", tf.reduce_mean(self.advantage_ph)),
+            _scalar("Performance/NSteps", tf.shape(self.actions_ph)[1]),
+            _scalar(
+                "Performance/NSteps_mean",
+                tf.reduce_mean(tf.cast(self.episode_len_ph, tf.float32)),
+            ),
+            _scalar(
+                "Performance/Communications",
+                tf.reduce_sum(tf.cast(self.present_indices_ph >= 0, tf.float32)) / 2,
+            ),
+            _scalar("Train/Entropy", entropy),
+            _scalar("Train/TotalLoss", total_loss),
+            _scalar("Train/ActorLoss", actor_loss),
+            _scalar("Train/CriticLoss", critic_loss),
+            _scalar("Train/GradientsNorm", gradients_norm),
+            _scalar("Train/ActorFullLoss", actor_full_loss),
+            *[
+                _scalar(f"ActorLogits/{d}", tf.reduce_mean(actor_logits[:, :, i]))
+                for d, i in self.model.directions_to_i.items()
+            ],
+            *[
                 _scalar(
-                    "Performance/NSteps_mean",
-                    tf.reduce_mean(tf.cast(self.episode_len_ph, tf.float32)),
-                ),
-                _scalar(
-                    "Performance/Communications",
-                    tf.reduce_sum(tf.cast(self.present_indices_ph >= 0, tf.float32))
-                    / 2,
-                ),
-                _scalar("Train/Entropy", entropy),
-                _scalar("Train/TotalLoss", total_loss),
-                _scalar("Train/ActorLoss", actor_loss),
-                _hist("Train/ActorLoss_hist", actor_loss_vector),
-                _scalar("Train/CriticLoss", critic_loss),
-                _scalar("Train/GradientsNorm", gradients_norm),
-                _hist("Train/CriticLoss_hist", critic_loss_vector),
-                _scalar("Train/ActorFullLoss", actor_full_loss),
-                *[
-                    _hist(
-                        f"Performance/Actions/{d}",
-                        tf.cast(tf.equal(self.actions_ph, i), tf.float32),
-                    )
-                    for d, i in self.model.directions_to_i.items()
-                ],
-                *[
-                    _scalar(f"ActorLogits/{d}", tf.reduce_mean(actor_logits[:, :, i]))
-                    for d, i in self.model.directions_to_i.items()
-                ],
-                *[
-                    _hist(f"ActorLogits/{d}_hist", actor_logits[:, :, i])
-                    for d, i in self.model.directions_to_i.items()
-                ],
-                *[
-                    _scalar(
-                        f"ActorGradients/{d}",
-                        tf.reduce_mean(action_logit_gradients[:, :, i]),
-                    )
-                    for d, i in self.model.directions_to_i.items()
-                ],
-                *[
-                    _hist(f"ActorGradients/{d}_hist", action_logit_gradients[:, :, i])
-                    for d, i in self.model.directions_to_i.items()
-                ],
-            ]
-        )
+                    f"ActorGradients/{d}",
+                    tf.reduce_mean(action_logit_gradients[:, :, i]),
+                )
+                for d, i in self.model.directions_to_i.items()
+            ],
+        ]
+        histograms = [
+            _hist("Train/CriticLoss_hist", critic_loss_vector),
+            _hist("Train/ActorLoss_hist", actor_loss_vector),
+            *[
+                _hist(
+                    f"Performance/Actions/{d}",
+                    tf.cast(tf.equal(self.actions_ph, i), tf.float32),
+                )
+                for d, i in self.model.directions_to_i.items()
+            ],
+            *[
+                _hist(f"ActorLogits/{d}_hist", actor_logits[:, :, i])
+                for d, i in self.model.directions_to_i.items()
+            ],
+            *[
+                _hist(f"ActorGradients/{d}_hist", action_logit_gradients[:, :, i])
+                for d, i in self.model.directions_to_i.items()
+            ],
+        ]
+        # self.summary_op = tf.compat.v1.summary.merge(scalars + histograms)
+        self.summary_op = tf.compat.v1.summary.merge(scalars)
         self.push_op_and_summaries = self.push_op, self.summary_op
 
     def work_on_one_game(self, maze: Maze, game_index, summary_writer):

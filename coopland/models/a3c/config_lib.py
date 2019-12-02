@@ -10,6 +10,9 @@ class AgentModelHParams:
     use_visible_agents: bool
     use_communication: bool
     comm_type: str = None
+    comm_dropout_rate: Optional[float] = None
+    use_gru: bool = False
+    use_bidir: bool = False
 
 
 @dataclass
@@ -71,8 +74,10 @@ class RewardParams:
     step_reward: float
     exit_reward: float
     exit_reward_diff_decay: float
+    exploration_reward: float = 0.0
     discount_rate: float = 0.9
     average_over_team: bool = True
+    one_agent_exit_reward: float = 0.0
 
 
 @dataclass
