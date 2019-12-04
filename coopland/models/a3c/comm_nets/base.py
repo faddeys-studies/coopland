@@ -33,4 +33,4 @@ class BaseCommCell(tf.keras.layers.Layer):
         return []
 
     def get_visible_ids(self, visible_other_agents):
-        raise NotImplementedError
+        return [ag_id for ag_id, direction, dist in visible_other_agents]

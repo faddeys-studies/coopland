@@ -25,3 +25,4 @@ reward:
   one_agent_exit_reward: 0.75
 
   exit_reward_diff_decay: 0.8
+  average_over_team: false

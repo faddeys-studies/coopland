@@ -6,18 +6,22 @@ from . import _util
 
 
 class CommCellInnerRNN(BaseCommCell):
-    def __init__(self, rnn_cell, units, signal_dropout_rate, version):
+    def __init__(
+        self, rnn_cell, units, signal_dropout_rate, version, use_gru, use_bidir
+    ):
         signal_size = 23
         assert version in (1, 2)
         self.version = version
         self._outputs_size = 31
         self._signal_dropout_rate = signal_dropout_rate
         super(CommCellInnerRNN, self).__init__(rnn_cell, signal_size)
+        cell_type = tf.keras.layers.GRUCell if use_gru else tf.keras.layers.LSTMCell
         self.comm_rnn = tf.keras.layers.RNN(
-            tf.keras.layers.StackedRNNCells(
-                [tf.keras.layers.LSTMCell(n) for n in units]
-            )
+            tf.keras.layers.StackedRNNCells([cell_type(n) for n in units])
         )
+        self._comm_out_size = self.comm_rnn.cell.output_size
+        if use_bidir:
+            self.comm_rnn = tf.keras.layers.Bidirectional(self.comm_rnn, "sum")
         self.final_layer = tf.keras.layers.Dense(
             self._outputs_size + self.signal_size, activation=tf.nn.leaky_relu
         )
@@ -37,9 +41,9 @@ class CommCellInnerRNN(BaseCommCell):
 
         # put all comm net inputs together:
         signal_inputs, signals_mask = _util.gather_present(signals, present_indices)
-        signal_inputs = tf.concat(
-            [signal_inputs, vis_dirs_onehot, tf.expand_dims(vis_dists, 2)], axis=2
-        )
+        # signal_inputs = tf.concat(
+        #     [signal_inputs, vis_dirs_onehot, tf.expand_dims(vis_dists, 2)], axis=2
+        # )
 
         # finally call communication steps:
         comm_features = self.comm_rnn.call(signal_inputs, signals_mask)
@@ -74,17 +78,17 @@ class CommCellInnerRNN(BaseCommCell):
 
     def build(self, input_shape):
         input_shape = tuple(input_shape)
-        self.comm_rnn.build((input_shape[0], None, self.signal_size + 5))
+        self.comm_rnn.build((input_shape[0], None, self.signal_size))  # + 5))
         if self.version == 1:
             self.rnn_cell.build(
-                input_shape[:-1] + (self.comm_rnn.cell.output_size + input_shape[-1],)
+                input_shape[:-1] + (self._comm_out_size + input_shape[-1],)
             )
             self.final_layer.build(input_shape[:-1] + (self.rnn_cell.output_size,))
         elif self.version == 2:
             self.rnn_cell.build(input_shape)
             self.final_layer.build(
                 input_shape[:-1]
-                + (self.comm_rnn.cell.output_size + self.rnn_cell.output_size,)
+                + (self._comm_out_size + self.rnn_cell.output_size,)
             )
         self.built = True
 

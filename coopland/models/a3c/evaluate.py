@@ -6,7 +6,8 @@ import numpy as np
 def main():
     cli = argparse.ArgumentParser()
     cli.add_argument("model_dir_or_results_txt")
-    cli.add_argument("--stuck-thr", type=int)
+    cli.add_argument("--stuck-thr", "-T", type=int)
+    cli.add_argument("--maze-size", "-S", type=int)
     opts = cli.parse_args()
 
     pth = opts.model_dir_or_results_txt
@@ -30,6 +31,19 @@ def main():
     print("Exited Max-Mean:", res_exited.max(axis=1).mean())
     print("Exited Min-Mean:", res_exited.min(axis=1).mean())
     print("Exited Mean:", res_exited.mean())
+
+    if opts.maze_size is not None:
+        maze_area = opts.maze_size * opts.maze_size
+        res_max = np.minimum(res_max, stuck_thr).astype("uint")
+        prob_dens = np.histogram(res_max, bins=stuck_thr, range=(1, stuck_thr))[0] / res_max.size
+        prob = np.cumsum(prob_dens)
+        x = np.exp(-np.square(np.arange(stuck_thr) / maze_area) / 2)
+        sorter = np.argsort(x)
+        x = x[sorter]
+        prob = prob[sorter]
+        x[0] = 0
+        etc_auc = np.sum((prob[1:] + prob[:-1]) * (x[1:] - x[:-1]) / 2)
+        print("ETC-AUC:", etc_auc)
 
 
 if __name__ == "__main__":
