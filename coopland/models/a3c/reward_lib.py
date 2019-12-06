@@ -1,5 +1,7 @@
-
-
+import numpy as np
+import itertools
+from coopland.models.a3c import config_lib
+from coopland.maze_lib import Direction
 
 
 def reward_function(params: config_lib.RewardParams):
@@ -65,7 +67,6 @@ def discount(rewards, gamma):
         next_r = gamma * next_r + r
         discounted_rewards[i] = next_r
     return discounted_rewards
-
 
 
 def get_visible_positions(visibility, position):

@@ -3,16 +3,20 @@ from typing import List, Callable, Tuple, Optional
 
 
 @dataclass
-class AgentModelHParams:
-    rnn_units: List[int]
-    comm_units: Optional[List[int]]
-    max_agents: int
-    use_visible_agents: bool
-    use_communication: bool
-    comm_type: str = None
-    comm_dropout_rate: Optional[float] = None
+class CommunicationParams:
+    type: str
+    units: Optional[List[int]]
+    signal_dropout_rate: Optional[float] = None
     use_gru: bool = False
     use_bidir: bool = False
+    can_see_others: bool = False
+
+
+@dataclass
+class AgentModelHParams:
+    rnn_units: List[int]
+    max_agents: int
+    comm: Optional[CommunicationParams]
 
 
 @dataclass

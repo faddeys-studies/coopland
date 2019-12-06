@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import argparse
 import os
 import yaml
@@ -13,11 +14,11 @@ def main():
 
     data = yaml.safe_load(open("scripts/model.yml"))
     if opts.comm_type is not None:
-        data["model"]["use_communication"] = True
-        data["model"]["comm_type"] = opts.comm_type
-        data["model"]["use_gru"] = opts.gru
+        data["model"].setdefault("comm", {})
+        data["model"]["comm"]["type"] = opts.comm_type
+        data["model"]["comm"]["use_gru"] = opts.gru
     else:
-        data["model"]["use_communication"] = False
+        data["model"]["comm"] = None
     os.makedirs(opts.target_dir, exist_ok=opts.force)
     data_str = yaml.dump(data)
     print(data_str)

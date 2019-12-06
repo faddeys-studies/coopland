@@ -5,16 +5,13 @@ import os
 from tensorflow.python.util import nest
 from coopland.maze_lib import Direction
 from coopland.game_lib import Observation
-from coopland.models.a3c import config_lib, comm_nets
+from coopland.models.a3c import config_lib, comm_nets, util
 
 
 class AgentModel:
     def __init__(self, hparams: config_lib.AgentModelHParams):
         self.hparams = hparams
         self.input_data_size = 4 + 8 + 5  # visibility + corners + exit
-        if self.hparams.use_visible_agents:
-            # +4 distances to other agents
-            self.input_data_size += 4 * (hparams.max_agents - 1)
         self.directions_list = Direction.list_clockwise()
         self.directions_to_i = {d: i for i, d in enumerate(self.directions_list)}
 
@@ -31,19 +28,6 @@ class AgentModel:
             exit_vec[-1] = exit_dist
         result.extend(exit_vec)
 
-        if self.hparams.use_visible_agents:
-            visible_agents_part = [0, 0, 0, 0] * (self.hparams.max_agents - 1)
-            for ag_id, direction, dist in visible_other_agents:
-                if ag_id >= self.hparams.max_agents:
-                    continue
-                offs = 4 * (ag_id if ag_id < agent_id else ag_id - 1)
-                if dist == 0:
-                    visible_agents_part[offs : offs + 4] = 1, 1, 1, 1
-                else:
-                    i = offs + self.directions_to_i[direction]
-                    visible_agents_part[i] = 1 / dist
-            result.extend(visible_agents_part)
-
         vector = np.array(result)
         assert vector.shape == (self.input_data_size,)
         return vector
@@ -57,11 +41,8 @@ class AgentModel:
         cell = tf.keras.layers.StackedRNNCells(
             [tf.keras.layers.LSTMCell(units) for units in self.hparams.rnn_units]
         )
-        if self.hparams.use_communication:
+        if self.hparams.comm is not None:
             cell = comm_nets.create(self.hparams, cell)
-            features_size = cell.output_size - cell.signal_size
-        else:
-            features_size = cell.output_size
         rnn = tf.keras.layers.RNN(
             cell, return_state=True, return_sequences=True, name=name_prefix + "RNN"
         )
@@ -73,8 +54,8 @@ class AgentModel:
         )
 
         rnn.build((None, None, self.input_data_size))
-        actor_head.build((None, None, features_size))
-        critic_head.build((None, None, features_size))
+        actor_head.build((None, None, cell.output_size))
+        critic_head.build((None, None, cell.output_size))
 
         saver = tf.train.Saver(
             [
@@ -95,19 +76,19 @@ class AgentModel:
 
         def compute_fn():
             input_batch = np.zeros([n_agents, self.input_data_size])
-            present_ids_batch = [[] for _ in range(n_agents)]
+            comm_data = util.CommData(n_agents, 1)
             for observation in observations:
                 if observation is None:
                     continue
                 agent_id = observation[0]
                 input_batch[agent_id] = self.encode_observation(*observation)
-                present_ids_batch[agent_id] = agent_instance.get_visible_ids(observation[3])
-            present_ids_batch = tf.keras.preprocessing.sequence.pad_sequences(
-                present_ids_batch, dtype=int, padding="post", value=-1
-            )
+                comm_data.add_observation(observation)
+            comm_ids_batch, comm_dirs_batch, comm_dist_batch = comm_data.build_batch()
             feed = {
                 input_ph: np.expand_dims(input_batch, axis=1),
-                present_indices_ph: np.expand_dims(present_ids_batch, axis=1),
+                comm_indices_ph: comm_ids_batch,
+                comm_directions_ph: comm_dirs_batch,
+                comm_distances_ph: comm_dist_batch,
                 input_mask_ph: np.array(
                     [[observation is not None] for observation in observations]
                 ),
@@ -148,7 +129,9 @@ class AgentModel:
         agent_fn.name = "RNN"
 
         input_ph = tf.compat.v1.placeholder(tf.float32, [None, 1, self.input_data_size])
-        present_indices_ph = tf.compat.v1.placeholder(tf.int32, [None, 1, None])
+        comm_indices_ph = tf.compat.v1.placeholder(tf.int32, [None, 1, None])
+        comm_directions_ph = tf.compat.v1.placeholder(tf.int32, [None, 1, None])
+        comm_distances_ph = tf.compat.v1.placeholder(tf.float32, [None, 1, None])
         input_mask_ph = tf.compat.v1.placeholder(tf.bool, [None, 1])
         [
             actor_logits_t,
@@ -158,7 +141,11 @@ class AgentModel:
             prev_states_phs,
             out_signal_t,
         ] = agent_instance.call(
-            input_ph, input_mask=input_mask_ph, present_indices=present_indices_ph
+            input_ph,
+            input_mask=input_mask_ph,
+            comm_indices=comm_indices_ph,
+            comm_directions=comm_directions_ph,
+            comm_distances=comm_distances_ph,
         )
         del actor_logits_t
         del out_signal_t
@@ -179,23 +166,23 @@ class AgentInstance:
         input_tensor,
         sequence_lengths_tensor=None,
         input_mask=None,
-        present_indices: "[N_batch_agents time max_other_agents]" = None,
+        *,
+        comm_indices: "[N_batch_agents time max_other_agents]",
+        comm_distances: "[N_batch_agents time max_other_agents]",
+        comm_directions: "[N_batch_agents time max_other_agents]",
     ):
         if input_mask is None:
             if sequence_lengths_tensor is not None:
                 input_mask = build_input_mask(sequence_lengths_tensor)
-        assert present_indices is not None
 
-        if self.model_hparams.use_communication:
+        if self.model_hparams.comm:
             assert isinstance(self.rnn.cell, comm_nets.BaseCommCell)
-            input_tensor = input_tensor, present_indices
+            input_tensor = input_tensor, comm_indices, comm_directions, comm_distances
         features, states_after, states_before_phs = _call_rnn(
             self.rnn, input_tensor, input_mask
         )
-        if self.model_hparams.use_communication:
-            signal_size = self.rnn.cell.signal_size
-            signals = features[:, :, :signal_size]
-            features = features[:, :, signal_size or None:]
+        if self.model_hparams.comm:
+            signals = self.rnn.cell.get_signal(states_after)
         else:
             signals = None
         actor_logits = self.actor_head(features)
@@ -210,11 +197,6 @@ class AgentInstance:
             states_before_phs,
             signals,
         )
-
-    def get_visible_ids(self, visible_other_agents):
-        if not self.model_hparams.use_communication:
-            return []
-        return self.rnn.cell.get_visible_ids(visible_other_agents)
 
     def get_variables(self):
         layers = self.rnn, self.actor_head, self.critic_head

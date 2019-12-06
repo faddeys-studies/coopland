@@ -8,6 +8,7 @@ import logging
 from queue import Queue, Full, Empty
 from coopland.models.a3c.agent import AgentModel, AgentInstance
 from coopland.models.a3c import data_utils, config_lib
+from coopland.models.a3c.util import CommData
 from coopland.game_lib import Game, Maze
 from coopland.maze_lib import generate_random_maze
 from coopland.visualizer_lib import VisualizerServer
@@ -52,8 +53,14 @@ class A3CWorker:
         self.reward_ph = tf.compat.v1.placeholder(tf.float32, [batch_dim, None])
         self.advantage_ph = tf.compat.v1.placeholder(tf.float32, [batch_dim, None])
         self.episode_len_ph = tf.compat.v1.placeholder(tf.int32, [batch_dim])
-        self.present_indices_ph = tf.compat.v1.placeholder(
+        self.comm_indices_ph = tf.compat.v1.placeholder(
             tf.int32, [batch_dim, None, None]
+        )
+        self.comm_directions_ph = tf.compat.v1.placeholder(
+            tf.int32, [batch_dim, None, None]
+        )
+        self.comm_distances_ph = tf.compat.v1.placeholder(
+            tf.float32, [batch_dim, None, None]
         )
         [
             actor_logits,
@@ -63,7 +70,9 @@ class A3CWorker:
             states_before_phs,
             signals,
         ] = self.instance.call(
-            self.inputs_ph, self.episode_len_ph, present_indices=self.present_indices_ph
+            self.inputs_ph, self.episode_len_ph, comm_indices=self.comm_indices_ph,
+            comm_distances=self.comm_distances_ph,
+            comm_directions=self.comm_directions_ph,
         )
         del states_after
         del states_before_phs
@@ -136,7 +145,7 @@ class A3CWorker:
             ),
             _scalar(
                 "Performance/Communications",
-                tf.reduce_sum(tf.cast(self.present_indices_ph >= 0, tf.float32)) / 2,
+                tf.reduce_sum(tf.cast(self.comm_indices_ph >= 0, tf.float32)) / 2,
             ),
             _scalar("Train/Entropy", entropy),
             _scalar("Train/TotalLoss", total_loss),
@@ -188,7 +197,7 @@ class A3CWorker:
         advantages = []
         inputs_batch = []
         actions_batch = []
-        present_indices_batch = []
+        comm_data = CommData(game.n_agents, max(map(len, replays)))
 
         def padseq(x, value=0.0, where="post"):
             return tf.keras.preprocessing.sequence.pad_sequences(
@@ -199,26 +208,14 @@ class A3CWorker:
             critic_value = np.array([move.critic_value for move, _, _ in replay])
             advantage = reward - critic_value
             input_vectors, action_ids = data_utils.get_training_batch(replay)
-            present_indices = [
-                self.instance.get_visible_ids(move.observation[3])
-                for move, _, _ in replay
-            ]
+            for move, _, _ in replay:
+                comm_data.add_observation(move.observation)
 
             critic_values.append(critic_value)
             advantages.append(advantage)
             inputs_batch.append(input_vectors[0])
             actions_batch.append(action_ids[0])
-            present_indices_batch.append(present_indices)
-        max_others = max(
-            max(map(len, present_indices)) for present_indices in present_indices_batch
-        )
-        present_indices_batch = [
-            tf.keras.preprocessing.sequence.pad_sequences(
-                present_indices, dtype=int, padding="post", value=-1, maxlen=max_others
-            )
-            for present_indices in present_indices_batch
-        ]
-        present_indices_batch = padseq(present_indices_batch, value=-1)
+        comm_ids, comm_dirs, comm_dists = comm_data.build_batch()
 
         op = self.push_op if summary_writer is None else self.push_op_and_summaries
 
@@ -227,7 +224,9 @@ class A3CWorker:
             self.advantage_ph: padseq(advantages),
             self.actions_ph: padseq(actions_batch),
             self.inputs_ph: padseq(inputs_batch),
-            self.present_indices_ph: present_indices_batch,
+            self.comm_indices_ph: comm_ids,
+            self.comm_directions_ph: comm_dirs,
+            self.comm_distances_ph: comm_dists,
             self.episode_len_ph: [len(replay) for replay in replays],
         }
         results = self.session.run(op, feed)

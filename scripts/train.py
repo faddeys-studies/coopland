@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import logging
 import argparse
 import threading
@@ -18,7 +19,7 @@ def main():
     cli.add_argument("--omp", action="store_true")
     cli.add_argument("--no-threads", action="store_true")
     cli.add_argument("--n-agents", type=int)
-    cli.add_argument("--train-until-n-games", type=int)
+    cli.add_argument("--n-games", type=int)
     opts = cli.parse_args()
     logging.basicConfig(level=logging.INFO)
 
@@ -50,7 +51,7 @@ def main():
             session_config=None,
         )
 
-    pb = tqdm.tqdm(total=opts.train_until_n_games)
+    pb = tqdm.tqdm(total=opts.n_games)
 
     ctx = config_lib.TrainingContext(
         model=cfg.model,
@@ -65,7 +66,7 @@ def main():
             summaries_dir=model_dir,
             do_visualize=True,
             per_game_callback=functools.partial(per_game_callback, progressbar=pb),
-            train_until_n_games=opts.train_until_n_games,
+            train_until_n_games=opts.n_games,
         ),
         performance=perf_cfg,
     )
