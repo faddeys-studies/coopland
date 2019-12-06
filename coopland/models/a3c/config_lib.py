@@ -78,6 +78,7 @@ class RewardParams:
     discount_rate: float = 0.9
     average_over_team: bool = True
     one_agent_exit_reward: float = 0.0
+    failure_reward: float = None
 
 
 @dataclass

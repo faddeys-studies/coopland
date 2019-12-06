@@ -1,8 +1,8 @@
 training:
-#  entropy_strength: 0.0003
-  sync_each_n_games: 20
+#  entropy_strength: 0.01
+  sync_each_n_games: 8
   learning_rate: 0.001
-  actor_loss_weight: 0.1
+  actor_loss_weight: 1.0
   critic_loss_weight: 1.0
   use_data_augmentation: false
   logit_regularization_strength: 0.01
@@ -22,7 +22,7 @@ reward:
 
   step_reward: 0.5
   exit_reward: 2.0
-  one_agent_exit_reward: 0.75
+  one_agent_exit_reward: 0.0
 
-  exit_reward_diff_decay: 0.8
+  exit_reward_diff_decay: 0.0
   average_over_team: false

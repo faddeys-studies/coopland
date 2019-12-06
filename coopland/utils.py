@@ -1,5 +1,11 @@
 import signal
 import contextlib
+import yaml
+import dacite
+from typing import TypeVar, Type
+
+
+T = TypeVar("T")
 
 
 @contextlib.contextmanager
@@ -23,3 +29,9 @@ def interrupt_atomic(n_interrupts_to_catch=None):
     signal.signal(signal.SIGINT, prev_handler)
     if interrupted:
         raise KeyboardInterrupt
+
+
+def load_from_yml(datatype: Type[T], filename) -> T:
+    with open(filename) as f:
+        data = yaml.safe_load(f)
+    return dacite.from_dict(datatype, data)

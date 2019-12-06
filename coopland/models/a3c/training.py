@@ -81,10 +81,9 @@ class A3CWorker:
                 * self.advantage_ph
             )
         else:
+            actions_one_hot = tf.one_hot(self.actions_ph, depth=4, dtype=tf.float32)
             actor_loss_vector = (
-                tf.nn.sparse_softmax_cross_entropy_with_logits(
-                    labels=self.actions_ph, logits=actor_logits
-                )
+                -tf.reduce_sum(actions_one_hot * tf.log(actor_probs + 1e-9), axis=2)
                 * self.advantage_ph
             )
         actor_loss = tf.reduce_sum(actor_loss_vector)
@@ -176,8 +175,8 @@ class A3CWorker:
                 for d, i in self.model.directions_to_i.items()
             ],
         ]
-        # self.summary_op = tf.compat.v1.summary.merge(scalars + histograms)
-        self.summary_op = tf.compat.v1.summary.merge(scalars)
+        self.summary_op = tf.compat.v1.summary.merge(scalars + histograms)
+        # self.summary_op = tf.compat.v1.summary.merge(scalars)
         self.push_op_and_summaries = self.push_op, self.summary_op
 
     def work_on_one_game(self, maze: Maze, game_index, summary_writer):

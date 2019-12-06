@@ -44,7 +44,7 @@ def main():
         while True:
             maze = maze_lib.generate_random_maze(opts.size, opts.size, 0.1)
             game = game_lib.Game.generate_random(maze, agent_fn, opts.n_agents)
-            agent_fn.init_before_game()
+            agent_fn.init_before_game(opts.n_agents)
             replays = game.play(maze.height * maze.width * 2)
 
             visualizer.run(game, replays)
