@@ -11,7 +11,7 @@ def main():
     cli.add_argument("--gru", action="store_true")
     opts = cli.parse_args()
 
-    data = yaml.safe_load(open("coopland/models/a3c/model.yml"))
+    data = yaml.safe_load(open("scripts/model.yml"))
     if opts.comm_type is not None:
         data["model"]["use_communication"] = True
         data["model"]["comm_type"] = opts.comm_type
