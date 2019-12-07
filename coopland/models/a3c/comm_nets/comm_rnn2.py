@@ -2,17 +2,19 @@ import tensorflow as tf
 from tensorflow.python.util import nest
 
 from .base import BaseCommCell
-from . import _util
+from coopland.models.a3c import util
 
 
 class CommCellInnerRNN(BaseCommCell):
     def __init__(
-        self, rnn_cell, units, signal_dropout_rate, version, use_gru, use_bidir
+        self, rnn_cell, units, signal_dropout_rate, version, use_gru, use_bidir,
+            see_others
     ):
         signal_size = 23
         assert version in (1, 2)
         self.version = version
         self._outputs_size = 31
+        self._see_others = see_others
         self._signal_dropout_rate = signal_dropout_rate
         super(CommCellInnerRNN, self).__init__(rnn_cell, signal_size)
         cell_type = tf.keras.layers.GRUCell if use_gru else tf.keras.layers.LSTMCell
@@ -40,10 +42,11 @@ class CommCellInnerRNN(BaseCommCell):
         vis_dirs_onehot = tf.cast(tf.one_hot(vis_dirs, 4), tf.float32)
 
         # put all comm net inputs together:
-        signal_inputs, signals_mask = _util.gather_present(signals, present_indices)
-        # signal_inputs = tf.concat(
-        #     [signal_inputs, vis_dirs_onehot, tf.expand_dims(vis_dists, 2)], axis=2
-        # )
+        signal_inputs, signals_mask = util.gather_present(signals, present_indices)
+        if self._see_others:
+            signal_inputs = tf.concat(
+                [signal_inputs, vis_dirs_onehot, tf.expand_dims(vis_dists, 2)], axis=2
+            )
 
         # finally call communication steps:
         comm_features = self.comm_rnn.call(signal_inputs, signals_mask)
@@ -68,17 +71,12 @@ class CommCellInnerRNN(BaseCommCell):
         states_after = rnn_states_after, out_signal
         return output_features, tuple(nest.flatten(states_after))
 
-    def get_visible_ids(self, visible_other_agents):
-        result = []
-        for ag_id, direction, dist in visible_other_agents:
-            result.extend([ag_id, dist, _util.directions_to_i[direction]])
-        if not result:
-            result = [-1, -1, -1]
-        return result
-
     def build(self, input_shape):
         input_shape = tuple(input_shape)
-        self.comm_rnn.build((input_shape[0], None, self.signal_size))  # + 5))
+        comm_in_size = self.signal_size
+        if self._see_others:
+            comm_in_size += 5
+        self.comm_rnn.build((input_shape[0], None, comm_in_size))
         if self.version == 1:
             self.rnn_cell.build(
                 input_shape[:-1] + (self._comm_out_size + input_shape[-1],)
