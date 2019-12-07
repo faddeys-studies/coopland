@@ -26,10 +26,12 @@ def _create(hparams: config_lib.AgentModelHParams, cell: tf.keras.layers.Layer):
             signal_size=hparams.comm.units[0],
             can_see_others=hparams.comm.can_see_others,
         )
-    if hparams.comm_type in (None, "signal_as_feature"):
-        return fully_connected.CommCellFullyConnected(cell, hparams.comm_units[0])
-    elif hparams.comm_type == "state_avg_reader":
-        return state_avg_reader.CommCellStateAvgReader(cell)
+    if hparams.comm.type == "comm_net":
+        return comm_net.CommNetCell(
+            cell,
+            hparams.comm.units[0] if hparams.comm.units else None,
+            hparams.comm.can_see_others,
+        )
     elif hparams.comm_type in ("inner_rnn", "inner_rnn_v2"):
         return comm_rnn_v20.CommCellInnerRNN(
             cell,

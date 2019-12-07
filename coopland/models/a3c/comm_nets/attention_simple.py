@@ -2,7 +2,7 @@ import tensorflow as tf
 from tensorflow.python.util import nest
 from coopland import tf_utils
 from .base import BaseCommCell
-from . import _util
+from coopland.models.a3c import util
 
 
 class CommCellAttention(BaseCommCell):
@@ -27,7 +27,7 @@ class CommCellAttention(BaseCommCell):
 
         n_agents, max_others = tf_utils.get_shape_static_or_dynamic(present_indices)
 
-        signals_sets, presence_mask = _util.gather_present(signals, present_indices)
+        signals_sets, presence_mask = util.gather_present(signals, present_indices)
 
         attention_inputs = tf.concat(
             [signals_sets, tf.tile(tf.expand_dims(signals, 1), [1, max_others, 1])],
@@ -47,14 +47,6 @@ class CommCellAttention(BaseCommCell):
         states_after = rnn_states_after, new_own_signal
         full_output = tf.concat([new_own_signal, output], axis=1)
         return full_output, tuple(nest.flatten(states_after))
-
-    def get_visible_ids(self, visible_other_agents):
-        result = []
-        for ag_id, direction, dist in visible_other_agents:
-            result.extend([ag_id, dist, _util.directions_to_i[direction]])
-        if not result:
-            result = [-1, -1, -1]
-        return result
 
     def build(self, input_shape):
         n_agents, input_size = input_shape

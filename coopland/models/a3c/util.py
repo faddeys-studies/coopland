@@ -14,14 +14,23 @@ def gather_present(vectors, present_indices, prepend_own=False):
     return tf.gather(vectors, present_indices + 1), tf.greater_equal(present_indices, 0)
 
 
+def build_visible_agents_features(
+    comm_directions: "[batch time]", comm_distances: "[batch time]"
+):
+    comm_dirs_onehot = tf.one_hot(comm_directions, 4, dtype=tf.float32)
+    comm_dists = tf.expand_dims(comm_distances, 2)
+    return tf.concat([comm_dirs_onehot, comm_dists], axis=2)
+
+
 def add_visible_agents_to_each_timestep(
     vectors: "[batch time vector]",
     comm_directions: "[batch time]",
     comm_distances: "[batch time]",
 ):
-    comm_dirs_onehot = tf.one_hot(comm_directions, 4, dtype=tf.float32)
-    comm_dists = tf.expand_dims(comm_distances, 2)
-    return tf.concat([comm_dirs_onehot, comm_dists, vectors], axis=2)
+    return tf.concat(
+        [build_visible_agents_features(comm_directions, comm_distances), vectors],
+        axis=2,
+    )
 
 
 directions_list = Direction.list_clockwise()

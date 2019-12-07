@@ -10,10 +10,11 @@ training:
 model:
   rnn_units: [47, 53]
   max_agents: 8
-  use_visible_agents: false
-  use_communication: true
-  comm_units: [29]
-  comm_type: state_avg_reader
+  comm:
+    type: comm_net
+    units: [23]
+    use_gru: false
+    can_see_others: true
 
 maze_size: 5
 
