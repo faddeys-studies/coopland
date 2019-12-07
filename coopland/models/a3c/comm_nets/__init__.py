@@ -47,14 +47,12 @@ def _create(hparams: config_lib.AgentModelHParams, cell: tf.keras.layers.Layer):
             can_see_others=hparams.comm.can_see_others,
             version=2,
         )
-    elif hparams.comm_type == "comm_rnn2":
-        return comm_rnn2.CommCellInnerRNN(
+    elif hparams.comm.type == "commrnn2":
+        return comm_rnn2.CommRNN2(
             cell,
-            hparams.comm_units,
-            hparams.comm_dropout_rate,
-            1,
-            use_gru=hparams.use_gru,
-            use_bidir=hparams.use_bidir,
-            see_others=hparams.see_others,
+            hparams.comm.units,
+            use_gru=hparams.comm.use_gru,
+            use_bidir=hparams.comm.use_bidir,
+            can_see_others=hparams.comm.can_see_others,
         )
-    raise ValueError(hparams.comm_type)
+    raise ValueError(hparams.comm.type)
