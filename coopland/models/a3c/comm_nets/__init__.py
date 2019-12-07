@@ -6,8 +6,6 @@ from . import (
     comm_rnn1,
     fully_connected,
     comm_net,
-    attention,
-    attention_simple,
 )
 
 
@@ -40,7 +38,16 @@ def _create(hparams: config_lib.AgentModelHParams, cell: tf.keras.layers.Layer):
             can_see_others=hparams.comm.can_see_others,
             version=1,
         )
-    elif hparams.comm_type == "inner_rnn_v1":
+    elif hparams.comm.type == "comm_rnn1_2":
+        return comm_rnn1.CommRNN1(
+            cell,
+            hparams.comm.units,
+            use_gru=hparams.comm.use_gru,
+            use_bidir=hparams.comm.use_bidir,
+            can_see_others=hparams.comm.can_see_others,
+            version=2,
+        )
+    elif hparams.comm_type == "comm_rnn2":
         return comm_rnn2.CommCellInnerRNN(
             cell,
             hparams.comm_units,
@@ -50,16 +57,4 @@ def _create(hparams: config_lib.AgentModelHParams, cell: tf.keras.layers.Layer):
             use_bidir=hparams.use_bidir,
             see_others=hparams.see_others,
         )
-    elif hparams.comm_type == "signal_averager":
-        return comm_net.CommNetCell(
-            cell, hparams.comm_units[-1], can_see_others=hparams.see_others
-        )
-    elif hparams.comm_type == "inner_rnn_v3":
-        return comm_rnn1.CommRNN1(
-            cell, hparams.comm_units, hparams.use_gru, hparams.use_bidir
-        )
-    elif hparams.comm_type == "attention":
-        return attention.CommCellAttention(cell, hparams.comm_units[0])
-    elif hparams.comm_type == "attention_simple":
-        return attention_simple.CommCellAttention(cell, hparams.comm_units[0])
     raise ValueError(hparams.comm_type)

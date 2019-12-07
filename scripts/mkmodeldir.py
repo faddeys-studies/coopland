@@ -8,8 +8,11 @@ def main():
     cli = argparse.ArgumentParser()
     cli.add_argument("target_dir")
     cli.add_argument("--comm-type")
-    cli.add_argument("--force")
+    cli.add_argument("--force", action="store_true")
     cli.add_argument("--gru", action="store_true")
+    cli.add_argument("--max-agents", type=int)
+    cli.add_argument("--can-see", action="store_true")
+    cli.add_argument("--only-hear", action="store_false", dest="can_see")
     opts = cli.parse_args()
 
     data = yaml.safe_load(open("scripts/model.yml"))
@@ -20,6 +23,10 @@ def main():
             data["model"]["comm"]["use_gru"] = opts.gru
         else:
             data["model"]["comm"] = None
+    if opts.max_agents is not None:
+        data["model"]["max_agents"] = opts.max_agents
+    if opts.can_see is not None:
+        data["model"]["comm"]["can_see_others"] = opts.can_see
     os.makedirs(opts.target_dir, exist_ok=opts.force)
     data_str = yaml.dump(data)
     print(data_str)
