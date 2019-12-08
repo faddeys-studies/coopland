@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow as tf
+from tensorflow.python.util import nest
 from coopland.maze_lib import Direction
 from coopland.tf_utils import get_shape_static_or_dynamic
 
@@ -81,3 +82,25 @@ class CommData:
         directions = data[:, :, 1, :]
         distances = data[:, :, 2, :].astype("float")
         return indices, directions, distances
+
+
+def average_by_mask(vector_seqs: "n_agents time vector_size", mask: "n_agents time"):
+    mask_float = tf.expand_dims(tf.cast(mask, tf.float32), 2)
+    return tf.reduce_sum(mask_float * vector_seqs, axis=1) / (
+        1e-5 + tf.reduce_sum(mask_float, axis=1)
+    )
+
+
+def get_total_size(sizes_structure):
+    return sum(nest.flatten(sizes_structure))
+
+
+def decode_embedding(value, sizes_structure):
+    sizes_flat = nest.flatten(sizes_structure)
+    offs = 0
+    parts = []
+    for size in sizes_flat:
+        parts.append(value[..., offs : offs + size])
+        offs += size
+    assert offs == get_total_size(sizes_structure)
+    return nest.pack_sequence_as(sizes_structure, parts)

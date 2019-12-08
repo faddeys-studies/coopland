@@ -21,7 +21,7 @@ def main():
     cli.add_argument("--no-omp", action="store_false", dest="omp", default=None)
     cli.add_argument("--no-threads", action="store_true")
     cli.add_argument("--n-agents", type=int)
-    cli.add_argument("--n-games", type=int, default=100_000)
+    cli.add_argument("--n-games", type=int, default=60_000)
     opts = cli.parse_args()
     if opts.omp is None:
         opts.omp = getpass.getuser() == "ec2-user"
