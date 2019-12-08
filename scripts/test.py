@@ -41,7 +41,7 @@ def main():
 
     results = []
     try:
-        for _ in tqdm.tqdm(range(opts.n_games)):
+        for _ in tqdm.tqdm(range(opts.n_games), desc=f"testing: {model_dir}"):
             maze = maze_lib.generate_random_maze(opts.size, opts.size, 0.1)
             game = game_lib.Game.generate_random(maze, agent_fn, opts.n_agents)
             agent_fn.init_before_game(opts.n_agents)

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Callable, Tuple, Optional
+from typing import List, Callable, Tuple, Optional, Dict
 
 
 @dataclass
@@ -47,6 +47,9 @@ class TrainingParams:
     regularization_strength: Optional[float] = None
     logit_regularization_strength: Optional[float] = None
     actor_label_smoothing: Optional[float] = None
+    optimizer: str = "RMSProp"
+    max_game_steps: Optional[int] = None
+    optimizer_kwargs: Optional[Dict[str, object]] = None
 
 
 @dataclass
@@ -83,6 +86,7 @@ class RewardParams:
     average_over_team: bool = True
     one_agent_exit_reward: float = 0.0
     failure_reward: float = None
+    overall_shift: float = None
 
 
 @dataclass

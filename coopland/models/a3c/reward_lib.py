@@ -28,10 +28,6 @@ def reward_function(params: config_lib.RewardParams):
                 r = params.step_reward * (d_old - d_new)
                 reward.append(r)
             rewards.append(reward)
-        if params.failure_reward is not None:
-            for reward, replay in zip(rewards, replays):
-                if replay[-1][2] != exit_pos:
-                    reward[-1] += params.failure_reward
         if params.average_over_team:
             if len(rewards) > 1:
                 average_reward = []
@@ -54,6 +50,13 @@ def reward_function(params: config_lib.RewardParams):
             rewards = [
                 discount(np.array(reward), params.discount_rate) for reward in rewards
             ]
+        if params.failure_reward is not None:
+            for i, replay in enumerate(replays):
+                if replay[-1][2] != exit_pos:
+                    rewards[i][:] += params.failure_reward
+        if params.overall_shift is not None:
+            for i, replay in enumerate(replays):
+                rewards[i][:] += params.overall_shift
         return rewards
 
     return compute_reward

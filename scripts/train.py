@@ -8,6 +8,7 @@ import dacite
 import yaml
 import tqdm
 import functools
+import getpass
 from coopland.game_lib import Direction
 from coopland.models.a3c.training import run_training
 from coopland.models.a3c import config_lib, reward_lib
@@ -16,11 +17,14 @@ from coopland.models.a3c import config_lib, reward_lib
 def main():
     cli = argparse.ArgumentParser()
     cli.add_argument("model_dir")
-    cli.add_argument("--omp", action="store_true")
+    cli.add_argument("--omp", action="store_true", default=None)
+    cli.add_argument("--no-omp", action="store_false", dest="omp", default=None)
     cli.add_argument("--no-threads", action="store_true")
     cli.add_argument("--n-agents", type=int)
-    cli.add_argument("--n-games", type=int)
+    cli.add_argument("--n-games", type=int, default=100_000)
     opts = cli.parse_args()
+    if opts.omp is None:
+        opts.omp = getpass.getuser() == "ec2-user"
     logging.basicConfig(level=logging.INFO)
 
     model_dir = opts.model_dir
@@ -51,7 +55,7 @@ def main():
             session_config=None,
         )
 
-    pb = tqdm.tqdm(total=opts.n_games)
+    pb = tqdm.tqdm(total=opts.n_games, desc=model_dir)
 
     ctx = config_lib.TrainingContext(
         model=cfg.model,

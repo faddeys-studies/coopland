@@ -1,19 +1,19 @@
 training:
 #  entropy_strength: 0.01
-  sync_each_n_games: 8
+  sync_each_n_games: 20
   learning_rate: 0.001
-  actor_loss_weight: 1.0
+  actor_loss_weight: 0.1
   critic_loss_weight: 1.0
-  use_data_augmentation: false
   logit_regularization_strength: 0.01
-#  actor_label_smoothing: 0.01
+  optimizer_kwargs:
+    decay: 0.995
+#  max_game_steps: 25
 model:
   rnn_units: [47, 53]
   max_agents: 8
   comm:
     type: comm_net
     units: [23]
-    use_gru: false
     can_see_others: true
 
 maze_size: 5

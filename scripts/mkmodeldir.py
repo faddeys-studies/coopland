@@ -4,15 +4,23 @@ import os
 import yaml
 
 
+def _bool_t(s):
+    s = s.lower().strip()
+    if s in 'yes true t 1':
+        return True
+    if s in 'no false f 0':
+        return False
+    raise ValueError(s)
+
+
 def main():
     cli = argparse.ArgumentParser()
     cli.add_argument("target_dir")
-    cli.add_argument("--comm-type")
+    cli.add_argument("--comm-type", required=True)
     cli.add_argument("--force", action="store_true")
     cli.add_argument("--gru", action="store_true")
-    cli.add_argument("--max-agents", type=int)
-    cli.add_argument("--can-see", action="store_true")
-    cli.add_argument("--only-hear", action="store_false", dest="can_see")
+    cli.add_argument("--max-agents", type=int, required=True)
+    cli.add_argument("--can-see", type=_bool_t, required=True)
     opts = cli.parse_args()
 
     data = yaml.safe_load(open("scripts/model.yml"))

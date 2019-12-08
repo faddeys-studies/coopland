@@ -76,7 +76,7 @@ class CommData:
         max_t = np.max(self._times)
         if max_t == 0:
             max_t = 1
-        data = self._buffer[:, :max_t, :, : self._max_others]
+        data = self._buffer[:, :max_t, :, : max(1, self._max_others)]
         indices = data[:, :, 0, :]
         directions = data[:, :, 1, :]
         distances = data[:, :, 2, :].astype("float")

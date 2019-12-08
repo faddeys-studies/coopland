@@ -70,7 +70,9 @@ class A3CWorker:
             states_before_phs,
             signals,
         ] = self.instance.call(
-            self.inputs_ph, self.episode_len_ph, comm_indices=self.comm_indices_ph,
+            self.inputs_ph,
+            self.episode_len_ph,
+            comm_indices=self.comm_indices_ph,
             comm_distances=self.comm_distances_ph,
             comm_directions=self.comm_directions_ph,
         )
@@ -191,7 +193,9 @@ class A3CWorker:
     def work_on_one_game(self, maze: Maze, game_index, summary_writer):
         game = Game.generate_random(maze, self.agent_fn, self.ctx.problem.n_agents)
         self.agent_fn.init_before_game(self.ctx.problem.n_agents)
-        replays = game.play(maze.height * maze.width * 3 // 2)
+        replays = game.play(
+            self.ctx.training.max_game_steps or maze.height * maze.width * 3 // 2
+        )
         rewards = self.ctx.problem.reward_function(maze, replays, game.exit_position)
         critic_values = []
         advantages = []
@@ -307,7 +311,10 @@ def run_training(train_context: config_lib.TrainingContext):
     session = tf.compat.v1.Session(config=perf.session_config)
     model = AgentModel(ctx.model)
     global_inst = model.build_layers()
-    optimizer = tf.compat.v1.train.RMSPropOptimizer(ctx.training.learning_rate)
+    optimizer_cls = getattr(tf.compat.v1.train, ctx.training.optimizer + "Optimizer")
+    optimizer = optimizer_cls(
+        ctx.training.learning_rate, **(ctx.training.optimizer_kwargs or {})
+    )
 
     workers = [
         A3CWorker(
